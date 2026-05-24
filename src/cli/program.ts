@@ -4,12 +4,15 @@ import { clearResources, doctorProject, getStatus, initProject, installPlatform,
 import { isPlatform, isTargetMode } from "../domain/types.js";
 import type { Platform, TargetMode } from "../domain/types.js";
 import type { ClearScope } from "../app/commands/index.js";
-import { formatCommandResult, formatStatus } from "./output.js";
+import { formatCommandResult, formatRootHelp, formatStatus } from "./output.js";
 
 export function createProgram(): Command {
   const program = new Command();
 
   program.name("ticiou").description("Compile shared and user AI profiles into Claude and Copilot project config").version("0.1.0");
+  program.configureHelp({
+    formatHelp: () => formatRootHelp(),
+  });
 
   program
     .command("init")

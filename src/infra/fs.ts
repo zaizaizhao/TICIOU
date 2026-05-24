@@ -141,7 +141,13 @@ export async function copyDirectoryContents(sourceRoot: string, destinationRoot:
   }
 }
 
-export async function copyDirectoryContentsIfMissing(sourceRoot: string, destinationRoot: string): Promise<void> {
+export type FileTransform = (relativePath: string, content: string) => string;
+
+export async function copyDirectoryContentsIfMissing(
+  sourceRoot: string,
+  destinationRoot: string,
+  transform?: FileTransform,
+): Promise<void> {
   if (!(await pathExists(sourceRoot))) {
     throw new Error(`Template directory does not exist: ${sourceRoot}`);
   }
@@ -154,7 +160,12 @@ export async function copyDirectoryContentsIfMissing(sourceRoot: string, destina
       continue;
     }
     await mkdir(dirname(destinationPath), { recursive: true });
-    await copyFile(sourcePath, destinationPath);
+    if (transform === undefined) {
+      await copyFile(sourcePath, destinationPath);
+    } else {
+      const rawContent = await readFile(sourcePath, "utf8");
+      await writeFile(destinationPath, transform(relativePath, rawContent), "utf8");
+    }
   }
 }
 

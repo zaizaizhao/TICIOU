@@ -7,6 +7,7 @@ import { afterEach, describe, expect, test } from "vitest";
 
 import { clearResources, doctorProject, getStatus, initProject, installPlatform, useProfile } from "../src/app/commands/index.js";
 import type { CommandRunResult, CommandRunner } from "../src/infra/command-runner.js";
+import { getPowershellPythonCommand, getPythonCommand } from "../src/infra/python-command.js";
 
 const tempRoots: string[] = [];
 
@@ -99,9 +100,11 @@ describe("Ticiou command workflow", () => {
       hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string; timeout?: number }> }>>;
     };
     expect(claudeSettings.hooks.SessionStart.map((entry) => entry.matcher)).toEqual(["startup", "clear", "compact"]);
-    expect(claudeSettings.hooks.SessionStart[0]?.hooks[0]?.command).toBe("python3 .claude/hooks/session-start.py");
+    expect(claudeSettings.hooks.SessionStart[0]?.hooks[0]?.command).toBe(
+      `${getPythonCommand()} .claude/hooks/session-start.py`,
+    );
     expect(claudeSettings.hooks.UserPromptSubmit[0]?.hooks[0]).toMatchObject({
-      command: "python3 .claude/hooks/inject-workflow-state.py",
+      command: `${getPythonCommand()} .claude/hooks/inject-workflow-state.py`,
       timeout: 15,
     });
     expect(existsSync(join(root, ".claude/hooks/session-start.py"))).toBe(true);
@@ -112,10 +115,13 @@ describe("Ticiou command workflow", () => {
       "Ticiou SessionStart hook",
     );
     await expect(readFile(join(root, ".github/copilot/hooks.json"), "utf8")).resolves.toContain(
-      "python3 .github/copilot/hooks/session-start.py",
+      `${getPythonCommand()} .github/copilot/hooks/session-start.py`,
+    );
+    await expect(readFile(join(root, ".github/copilot/hooks.json"), "utf8")).resolves.toContain(
+      `${getPowershellPythonCommand()} .github/copilot/hooks/inject-workflow-state.py`,
     );
     await expect(readFile(join(root, ".github/hooks/ticiou.json"), "utf8")).resolves.toContain(
-      "python3 .github/copilot/hooks/inject-workflow-state.py",
+      `${getPythonCommand()} .github/copilot/hooks/inject-workflow-state.py`,
     );
 
     await useProfile({ cwd: root, user: "kaibin.xu", runner });

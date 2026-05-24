@@ -63,6 +63,40 @@ export function formatError(message: string, options: OutputOptions = {}): strin
   return `${color.errorText("Error:")} ${message}`;
 }
 
+export function formatRootHelp(options: OutputOptions = {}): string {
+  const color = createColor(options.color);
+
+  return [
+    color.brand("┌───────────────────────────────────────────────┐"),
+    color.brand("│                                               │"),
+    color.brand("│    ████████╗██╗ ██████╗██╗ ██████╗██╗   ██╗   │"),
+    color.brand("│   ╚══██╔══╝██║██╔════╝██║██╔═══██╗██║   ██║   │"),
+    color.brand("│      ██║   ██║██║     ██║██║   ██║██║   ██║   │"),
+    color.brand("│      ██║   ██║██║     ██║██║   ██║██║   ██║   │"),
+    color.brand("│      ██║   ██║╚██████╗██║╚██████╔╝╚██████╔╝   │"),
+    color.brand("│       ╚═╝   ╚═╝ ╚═════╝╚═╝ ╚═════╝  ╚═════╝   │"),
+    color.brand("│                                               │"),
+    color.brand("│                   TICIOU  提效                │"),
+    color.brand("│                                               │"),
+    color.brand("└───────────────────────────────────────────────┘"),
+    "",
+    color.heading("Usage"),
+    `  ${color.command("ticiou <command> [options]")}`,
+    "",
+    color.heading("Commands"),
+    `  ${color.command("init")}              Initialize Ticiou project state`,
+    `  ${color.command("install claude")}    Install Claude adapter`,
+    `  ${color.command("install copilot")}   Install Copilot adapter`,
+    `  ${color.command("use -u <user>")}     Activate a user profile`,
+    `  ${color.command("status")}            Show active profile`,
+    `  ${color.command("doctor")}            Validate generated resources`,
+    `  ${color.command("clear user")}        Clear active user resources`,
+    `  ${color.command("clear all")}         Clear all generated resources`,
+    "",
+    color.muted("Run ticiou <command> -h for command help."),
+  ].join("\n");
+}
+
 function formatMessage(message: string, color: CliColor): string {
   const tone = classifyMessage(message);
   return `${color.symbol(symbolForTone(tone), tone)} ${color.message(message, tone)}`;
@@ -103,6 +137,7 @@ function symbolForTone(tone: MessageTone): string {
 }
 
 interface CliColor {
+  brand(value: string): string;
   heading(value: string): string;
   muted(value: string): string;
   symbol(value: string, tone: MessageTone): string;
@@ -119,6 +154,7 @@ function createColor(enabled = shouldUseColor()): CliColor {
   const chalk = new Chalk({ level: enabled ? 1 : 0 });
 
   return {
+    brand: chalk.greenBright,
     heading: chalk.blueBright.bold,
     muted: chalk.gray,
     symbol: (value, tone) => {

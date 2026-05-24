@@ -5,6 +5,7 @@ import type { Platform } from "../../../domain/types.js";
 import { joinRelative, pathExists, readTextFileIfExists } from "../../../infra/fs.js";
 import { readManifest } from "../../../infra/manifest.js";
 import { resolveRuntimeProfilesDirectory } from "../../../infra/profile-paths.js";
+import { getPythonCommand } from "../../../infra/python-command.js";
 import { describePlatform, platformResourceRoot, platformSkillRoot } from "../../../platforms/registry.js";
 import { readConfig } from "../../../project/config.js";
 import { TICIOU_DIR } from "../../../project/paths.js";
@@ -219,11 +220,13 @@ async function checkClaudeHooks(targetRoot: string, messages: string[]): Promise
   try {
     const settings = JSON.parse(settingsContent) as unknown;
     const content = JSON.stringify(settings);
-    for (const expectedCommand of [
-      "python3 .claude/hooks/session-start.py",
-      "python3 .claude/hooks/inject-workflow-state.py",
-      "python3 .claude/hooks/inject-subagent-context.py",
+    const pythonCommand = getPythonCommand();
+    for (const hookFile of [
+      "session-start.py",
+      "inject-workflow-state.py",
+      "inject-subagent-context.py",
     ]) {
+      const expectedCommand = `${pythonCommand} .claude/hooks/${hookFile}`;
       if (!content.includes(expectedCommand)) {
         ok = false;
         messages.push(`Claude settings does not register hook command: ${expectedCommand}`);

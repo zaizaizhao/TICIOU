@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 
+import { main } from "../src/cli/index.js";
 import { formatCommandResult, formatError, formatStatus } from "../src/cli/output.js";
+import { createProgram } from "../src/cli/program.js";
 
 describe("CLI output formatting", () => {
   test("formats successful command results with a title, divider, status dots, and next action", () => {
@@ -96,4 +98,59 @@ describe("CLI output formatting", () => {
 
     expect(output).toBe("Error: Unsupported platform: vim");
   });
+
+  test("formats root help with the TICIOU display banner and command hints", () => {
+    const output = createProgram().helpInformation();
+
+    expect(output).toContain("┌───────────────────────────────────────────────┐");
+    expect(output).toContain("└───────────────────────────────────────────────┘");
+    expect(output).toContain("████████╗");
+    expect(output).toContain("██╗   ██╗");
+    expect(output).toContain("TICIOU");
+    expect(output).toContain("提效");
+    expect(output).not.toContain("TICIOI");
+    expect(output).not.toContain("Compile shared and user AI profiles.");
+    expect(output).toContain("Commands");
+    expect(output).toContain("init              Initialize Ticiou project state");
+    expect(output).toContain("install claude    Install Claude adapter");
+    expect(output).toContain("use -u <user>     Activate a user profile");
+    expect(output).toContain("doctor            Validate generated resources");
+  });
+
+  test("keeps root help banner inside box-drawing borders", () => {
+    const output = createProgram().helpInformation();
+    const bannerLines = output.split("\n").filter((line) => line.startsWith("┌") || line.startsWith("│") || line.startsWith("└"));
+
+    expect(bannerLines).toHaveLength(12);
+    expect(new Set(bannerLines.map(terminalDisplayWidth))).toEqual(new Set([49]));
+    expect(bannerLines[0]).toBe("┌───────────────────────────────────────────────┐");
+    expect(bannerLines.at(-1)).toBe("└───────────────────────────────────────────────┘");
+    expect(bannerLines.slice(1, -1).every((line) => line.startsWith("│") && line.endsWith("│"))).toBe(true);
+  });
+
+  test("shows root help when invoked without a command", async () => {
+    const output: string[] = [];
+    const originalLog = console.log;
+    console.log = (value?: unknown) => {
+      output.push(String(value ?? ""));
+    };
+
+    try {
+      await main(["node", "ticiou"]);
+    } finally {
+      console.log = originalLog;
+    }
+
+    expect(output.join("")).toContain("TICIOU  提效");
+    expect(output.join("")).toContain("use -u <user>     Activate a user profile");
+  });
 });
+
+function terminalDisplayWidth(value: string): number {
+  return Array.from(value).reduce((width, character) => {
+    if (/[\u4E00-\u9FFF]/u.test(character)) {
+      return width + 2;
+    }
+    return width + 1;
+  }, 0);
+}

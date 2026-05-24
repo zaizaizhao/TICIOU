@@ -20,6 +20,15 @@ afterEach(async () => {
 });
 
 describe("built CLI", () => {
+  test("prints root help through the package bin wrapper", async () => {
+    const root = await makeTempRoot();
+    const binPath = resolve("bin/ticiou.js");
+
+    await expect(execFileAsync(process.execPath, [binPath], { cwd: root })).resolves.toMatchObject({
+      stdout: expect.stringContaining("TICIOU  提效"),
+    });
+  });
+
   test("loads copied templates from dist when installing Claude", async () => {
     const root = await makeTempRoot();
     const cliPath = resolve("dist/cli/index.js");
