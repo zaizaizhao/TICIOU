@@ -113,6 +113,7 @@ describe("CLI output formatting", () => {
     expect(output).toContain("Commands");
     expect(output).toContain("init              Initialize Ticiou project state");
     expect(output).toContain("install claude    Install Claude adapter");
+    expect(output).toContain("setup -u <user>   Initialize, install, and activate");
     expect(output).toContain("use -u <user>     Activate a user profile");
     expect(output).toContain("doctor            Validate generated resources");
   });
@@ -142,6 +143,7 @@ describe("CLI output formatting", () => {
     }
 
     expect(output.join("")).toContain("TICIOU  提效");
+    expect(output.join("")).toContain("setup -u <user>   Initialize, install, and activate");
     expect(output.join("")).toContain("use -u <user>     Activate a user profile");
   });
 });

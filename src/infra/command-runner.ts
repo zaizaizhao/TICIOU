@@ -13,15 +13,25 @@ export type CommandRunner = (
 
 export const defaultCommandRunner: CommandRunner = (file, args, options) =>
   new Promise((resolve, reject) => {
-    execFile(file, args, { cwd: options.cwd, env: options.env }, (error, stdout, stderr) => {
-      if (error !== null) {
-        reject(error);
-        return;
-      }
+    execFile(
+      file,
+      args,
+      {
+        cwd: options.cwd,
+        env: options.env,
+        shell: process.platform === "win32",
+        windowsHide: true,
+      },
+      (error, stdout, stderr) => {
+        if (error !== null) {
+          reject(error);
+          return;
+        }
 
-      resolve({
-        stdout,
-        stderr,
-      });
-    });
+        resolve({
+          stdout,
+          stderr,
+        });
+      },
+    );
   });

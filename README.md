@@ -36,7 +36,7 @@ profiles/
   users/yanan.zhao/
 ```
 
-执行 `ticiou use -u kaibin.xu` 时，Ticiou 会把 `shared` 和该用户目录下的资源渲染到当前项目的 `.claude/` 或 `.github/` 中。
+执行 `ticiou setup -u kaibin.xu -p claude` 时，Ticiou 会初始化项目、安装平台 adapter，并把 `shared` 和该用户目录下的资源渲染到当前项目的 `.claude/` 或 `.github/` 中。
 Claude 的用户级 skills 会以本项目 local plugin 方式启用，避免个人上下文作为项目 skill 泄漏到仓库配置中。
 
 ## 支持什么
@@ -54,8 +54,7 @@ Claude 的用户级 skills 会以本项目 local plugin 方式启用，避免个
 ```bash
 cd your-project
 
-ticiou install claude
-ticiou use -u kaibin.xu
+ticiou setup -u kaibin.xu -p claude
 ticiou doctor
 ```
 
@@ -86,15 +85,19 @@ profiles/shared/skills/azure-devops/SKILL.md
 启用 Copilot：
 
 ```bash
-ticiou install copilot
-ticiou use -u kaibin.xu
+ticiou setup -u kaibin.xu -p copilot
+```
+
+同时启用 Claude 和 Copilot：
+
+```bash
+ticiou setup -u kaibin.xu -p claude -p copilot
 ```
 
 如需把 `.github/` 写到 Git 仓库根目录：
 
 ```bash
-ticiou install copilot --target git-root
-ticiou use -u kaibin.xu --target git-root
+ticiou setup -u kaibin.xu -p copilot --target git-root
 ```
 
 ## 命令
@@ -104,6 +107,12 @@ ticiou init
 ```
 
 初始化当前目录的 `.ticiou/` 运行配置。
+
+```bash
+ticiou setup -u <user> -p <platform>
+```
+
+一键完成 `ticiou init`、`ticiou install <platform>` 和 `ticiou use -u <user>`。可重复传入 `-p` 同时安装多个平台，例如 `ticiou setup -u kaibin.xu -p claude -p copilot`。
 
 ```bash
 ticiou install claude
@@ -155,8 +164,7 @@ pnpm run build
 
 ```bash
 cd your-project
-node /path/to/Ticiou/dist/cli/index.js install claude
-node /path/to/Ticiou/dist/cli/index.js use -u kaibin.xu
+node /path/to/Ticiou/dist/cli/index.js setup -u kaibin.xu -p claude
 ```
 
 或者使用 `npm link`：
@@ -166,8 +174,7 @@ cd /path/to/Ticiou
 npm link
 
 cd your-project
-ticiou install claude
-ticiou use -u kaibin.xu
+ticiou setup -u kaibin.xu -p claude
 ```
 
 源码变更后重新构建：
@@ -210,7 +217,7 @@ ticiou use -u kaibin.xu
 1. 在 `profiles/shared` 维护团队共享能力。
 2. 在 `profiles/users/<user>` 维护个人能力。
 3. 通过 CI 构建并发布 npm 包。
-4. 开发者升级 CLI 后，在自己的项目里执行 `ticiou use -u <user>`。
+4. 开发者升级 CLI 后，在自己的项目里执行 `ticiou setup -u <user> -p <platform>`。
 
 这样配置可以被 review、版本化和回滚，同时不会把每个人的私有激活状态提交到业务仓库。
 

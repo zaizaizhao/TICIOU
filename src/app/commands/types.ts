@@ -15,6 +15,11 @@ export interface UseProfileOptions extends CommandOptions {
   user: string;
 }
 
+export interface SetupProjectOptions extends CommandOptions {
+  user: string;
+  platforms: Platform[];
+}
+
 export type ClearScope = "user" | "all";
 
 export interface ClearResourcesOptions extends CommandOptions {

@@ -2,7 +2,9 @@ import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const packageRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
+const packageRoot = dirname(
+  fileURLToPath(new URL("../package.json", import.meta.url)),
+);
 const copyJobs = [
   {
     source: join(packageRoot, "src", "templates"),

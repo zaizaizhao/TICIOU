@@ -5,7 +5,15 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, test } from "vitest";
 
-import { clearResources, doctorProject, getStatus, initProject, installPlatform, useProfile } from "../src/app/commands/index.js";
+import {
+  clearResources,
+  doctorProject,
+  getStatus,
+  initProject,
+  installPlatform,
+  setupProject,
+  useProfile,
+} from "../src/app/commands/index.js";
 import type { CommandRunResult, CommandRunner } from "../src/infra/command-runner.js";
 import { getPowershellPythonCommand, getPythonCommand } from "../src/infra/python-command.js";
 
@@ -87,6 +95,54 @@ describe("Ticiou command workflow", () => {
     expect(existsSync(join(root, ".ticiou/shared"))).toBe(false);
     expect(existsSync(join(root, ".ticiou/profiles"))).toBe(false);
     expect(existsSync(join(root, ".ticiou/templates"))).toBe(false);
+  });
+
+  test("sets up a new project platform and profile in one command", async () => {
+    const root = await makeTempRoot();
+
+    const result = await setupProject({
+      cwd: root,
+      user: "kaibin.xu",
+      platforms: ["copilot"],
+    });
+    const status = await getStatus({ cwd: root });
+
+    expect(result.messages).toEqual([
+      `Initialized Ticiou project at ${root}`,
+      "Copilot adapter installed",
+      "Activated Ticiou profile kaibin.xu",
+    ]);
+    expect(status.currentProfile).toBe("kaibin.xu");
+    expect(status.enabledPlatforms).toEqual(["copilot"]);
+    await expect(readFile(join(root, ".ticiou/.runtime/current-profile"), "utf8")).resolves.toBe("kaibin.xu\n");
+    await expect(
+      readFile(join(root, ".github/skills/ticiou-user-kaibin-xu-personal/SKILL.md"), "utf8"),
+    ).resolves.toContain("name: ticiou-user-kaibin-xu-personal");
+    expect(existsSync(join(root, ".github/copilot-instructions.md"))).toBe(true);
+  });
+
+  test("sets up multiple platforms in one command", async () => {
+    const root = await makeTempRoot();
+    const { runner, calls } = createFakeClaudeRunner();
+
+    const result = await setupProject({
+      cwd: root,
+      user: "kaibin.xu",
+      platforms: ["claude", "copilot"],
+      runner,
+    });
+    const status = await getStatus({ cwd: root });
+
+    expect(result.messages).toEqual([
+      `Initialized Ticiou project at ${root}`,
+      "Claude adapter installed",
+      "Copilot adapter installed",
+      "Activated Ticiou profile kaibin.xu",
+    ]);
+    expect(status.enabledPlatforms).toEqual(["claude", "copilot"]);
+    expect(calls.some((call) => call.args[0] === "plugin" && call.args[1] === "install")).toBe(true);
+    expect(existsSync(join(root, ".claude/settings.json"))).toBe(true);
+    expect(existsSync(join(root, ".github/copilot-instructions.md"))).toBe(true);
   });
 
   test("installs Claude and Copilot adapters and renders package shared plus active user skills", async () => {

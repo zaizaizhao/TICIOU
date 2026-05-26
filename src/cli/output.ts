@@ -87,6 +87,7 @@ export function formatRootHelp(options: OutputOptions = {}): string {
     `  ${color.command("init")}              Initialize Ticiou project state`,
     `  ${color.command("install claude")}    Install Claude adapter`,
     `  ${color.command("install copilot")}   Install Copilot adapter`,
+    `  ${color.command("setup -u <user>")}   Initialize, install, and activate`,
     `  ${color.command("use -u <user>")}     Activate a user profile`,
     `  ${color.command("status")}            Show active profile`,
     `  ${color.command("doctor")}            Validate generated resources`,

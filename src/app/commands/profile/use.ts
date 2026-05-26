@@ -2,7 +2,10 @@ import { writeManagedFiles } from "../../../infra/manifest.js";
 import { resolveTargetRoot } from "../../../infra/target-root.js";
 import { ensurePlatformInstalled } from "../../../platforms/registry.js";
 import { getEnabledPlatforms, ensureConfig } from "../../../project/config.js";
-import { ensurePackagedProfile, writeCurrentProfile } from "../../../project/profile-store.js";
+import {
+  ensurePackagedProfile,
+  writeCurrentProfile,
+} from "../../../project/profile-store.js";
 import {
   collectClaudeLocalProfilePluginFiles,
   installClaudeLocalProfilePlugin,
@@ -13,8 +16,13 @@ import { collectManagedResourceFiles } from "../../../rendering/resources.js";
 import { initProject } from "../project/init.js";
 import type { CommandResult, UseProfileOptions } from "../types.js";
 
-export async function useProfile(options: UseProfileOptions): Promise<CommandResult> {
-  const targetRoot = await resolveTargetRoot({ cwd: options.cwd, mode: options.target });
+export async function useProfile(
+  options: UseProfileOptions,
+): Promise<CommandResult> {
+  const targetRoot = await resolveTargetRoot({
+    cwd: options.cwd,
+    mode: options.target,
+  });
   await initProject({ cwd: targetRoot, target: "cwd" });
 
   const config = await ensureConfig(targetRoot);
@@ -25,9 +33,20 @@ export async function useProfile(options: UseProfileOptions): Promise<CommandRes
     await ensurePlatformInstalled(targetRoot, platform);
   }
 
-  const managedFiles = await collectManagedResourceFiles(targetRoot, options.user, config, enabledPlatforms);
+  const managedFiles = await collectManagedResourceFiles(
+    targetRoot,
+    options.user,
+    config,
+    enabledPlatforms,
+  );
+  let hasClaudePluginFiles = false;
   if (enabledPlatforms.includes("claude")) {
-    managedFiles.push(...(await collectClaudeLocalProfilePluginFiles(options.user, config)));
+    const pluginFiles = await collectClaudeLocalProfilePluginFiles(
+      options.user,
+      config,
+    );
+    hasClaudePluginFiles = pluginFiles.length > 0;
+    managedFiles.push(...pluginFiles);
   }
 
   await writeManagedFiles({
@@ -41,13 +60,19 @@ export async function useProfile(options: UseProfileOptions): Promise<CommandRes
       config,
       runner: options.runner,
     });
-    await syncClaudeLocalProfilePluginSettings(targetRoot, options.user, config);
-    await installClaudeLocalProfilePlugin({
+    await syncClaudeLocalProfilePluginSettings(
       targetRoot,
-      user: options.user,
+      hasClaudePluginFiles ? options.user : undefined,
       config,
-      runner: options.runner,
-    });
+    );
+    if (hasClaudePluginFiles) {
+      await installClaudeLocalProfilePlugin({
+        targetRoot,
+        user: options.user,
+        config,
+        runner: options.runner,
+      });
+    }
   }
   await writeCurrentProfile(targetRoot, options.user);
 

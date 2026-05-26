@@ -40,6 +40,20 @@ describe("built CLI", () => {
     });
   });
 
+  test("sets up Copilot and a user profile from the built CLI", async () => {
+    const root = await makeTempRoot();
+    const cliPath = resolve("dist/cli/index.js");
+
+    await expect(
+      execFileAsync(process.execPath, [cliPath, "setup", "-u", "kaibin.xu", "-p", "copilot"], { cwd: root }),
+    ).resolves.toMatchObject({
+      stdout: expect.stringContaining("Activated Ticiou profile kaibin.xu"),
+    });
+    await expect(execFileAsync(process.execPath, [cliPath, "status"], { cwd: root })).resolves.toMatchObject({
+      stdout: expect.stringContaining("● profile kaibin.xu"),
+    });
+  });
+
   test("clears user resources from the built CLI", async () => {
     const root = await makeTempRoot();
     const claudeConfig = await makeTempRoot();
