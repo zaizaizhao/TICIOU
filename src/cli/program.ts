@@ -12,7 +12,7 @@ import {
 import { isPlatform, isTargetMode } from "../domain/types.js";
 import type { Platform, TargetMode } from "../domain/types.js";
 import type { ClearScope } from "../app/commands/index.js";
-import { formatCommandResult, formatRootHelp, formatStatus } from "./output.js";
+import { formatBrandBanner, formatCommandResult, formatRootHelp, formatStatus } from "./output.js";
 
 export function createProgram(): Command {
   const program = new Command();
@@ -68,11 +68,15 @@ export function createProgram(): Command {
         target: options.target,
       });
       printOutput(
-        formatCommandResult({
-          title: "Ticiou setup",
-          messages: result.messages,
-          nextAction: "ticiou doctor",
-        }),
+        [
+          formatBrandBanner(),
+          "",
+          formatCommandResult({
+            title: "Ticiou setup",
+            messages: result.messages,
+            nextAction: "ticiou doctor",
+          }),
+        ].join("\n"),
       );
     });
 

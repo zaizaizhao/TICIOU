@@ -44,11 +44,12 @@ describe("built CLI", () => {
     const root = await makeTempRoot();
     const cliPath = resolve("dist/cli/index.js");
 
-    await expect(
-      execFileAsync(process.execPath, [cliPath, "setup", "-u", "kaibin.xu", "-p", "copilot"], { cwd: root }),
-    ).resolves.toMatchObject({
-      stdout: expect.stringContaining("Activated Ticiou profile kaibin.xu"),
+    const setupResult = await execFileAsync(process.execPath, [cliPath, "setup", "-u", "kaibin.xu", "-p", "copilot"], {
+      cwd: root,
     });
+
+    expect(setupResult.stdout).toContain("TICIOU  提效");
+    expect(setupResult.stdout).toContain("Activated Ticiou profile kaibin.xu");
     await expect(execFileAsync(process.execPath, [cliPath, "status"], { cwd: root })).resolves.toMatchObject({
       stdout: expect.stringContaining("● profile kaibin.xu"),
     });

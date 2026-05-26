@@ -63,7 +63,7 @@ export function formatError(message: string, options: OutputOptions = {}): strin
   return `${color.errorText("Error:")} ${message}`;
 }
 
-export function formatRootHelp(options: OutputOptions = {}): string {
+export function formatBrandBanner(options: OutputOptions = {}): string {
   const color = createColor(options.color);
 
   return [
@@ -79,6 +79,14 @@ export function formatRootHelp(options: OutputOptions = {}): string {
     color.brand("│                   TICIOU  提效                │"),
     color.brand("│                                               │"),
     color.brand("└───────────────────────────────────────────────┘"),
+  ].join("\n");
+}
+
+export function formatRootHelp(options: OutputOptions = {}): string {
+  const color = createColor(options.color);
+
+  return [
+    formatBrandBanner(options),
     "",
     color.heading("Usage"),
     `  ${color.command("ticiou <command> [options]")}`,

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import { main } from "../src/cli/index.js";
-import { formatCommandResult, formatError, formatStatus } from "../src/cli/output.js";
+import { formatBrandBanner, formatCommandResult, formatError, formatStatus } from "../src/cli/output.js";
 import { createProgram } from "../src/cli/program.js";
 
 describe("CLI output formatting", () => {
@@ -102,6 +102,7 @@ describe("CLI output formatting", () => {
   test("formats root help with the TICIOU display banner and command hints", () => {
     const output = createProgram().helpInformation();
 
+    expect(output).toContain(formatBrandBanner({ color: false }));
     expect(output).toContain("┌───────────────────────────────────────────────┐");
     expect(output).toContain("└───────────────────────────────────────────────┘");
     expect(output).toContain("████████╗");
