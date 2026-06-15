@@ -44,6 +44,7 @@ Claude 的用户级 skills 会以本项目 local plugin 方式启用，避免个
 - Claude Code 项目级配置
 - GitHub Copilot / Copilot CLI 项目级配置
 - 多用户 profile 切换
+- SkillHub 远端 skills 选择、锁定、下载和同步
 - skills、hooks、agents、commands、prompts
 - manifest 安全写入，避免覆盖非 Ticiou 生成的文件
 
@@ -80,6 +81,81 @@ profiles/users/kaibin.xu/skills/personal/SKILL.md
 profiles/shared/skills/azure-devops/SKILL.md
   -> .claude/skills/ticiou-shared-azure-devops/SKILL.md
   -> /ticiou-shared-azure-devops
+```
+
+### 使用 SkillHub skills
+
+Ticiou 可以直接连接 SkillHub registry，不依赖 `skillhub` CLI 二进制。登录后把远端 skill 加入当前用户 profile，`ticiou use` 和 `ticiou skill sync` 会按 lock 文件下载并渲染到已启用的平台目录。
+
+```bash
+ticiou skillhub login --registry http://localhost:3000
+ticiou skill list --remote --namespace emrois --owner self --label active
+ticiou skill add emrois/api-review
+ticiou use -u kaibin.xu
+ticiou skill sync
+```
+
+本地开发时，`http://localhost:3000` 通常由 SkillHub web dev server 代理到后端；如果只启动后端 API，可以传 `--registry http://localhost:8080`。
+
+凭据只保存在用户目录，不写入项目文件：
+
+```text
+~/.ticiou/skillhub-credentials.json
+```
+
+项目内只保存 selection、lock 和缓存：
+
+```text
+.ticiou/config.yaml
+.ticiou/.runtime/skillhub-lock.json
+.ticiou/.runtime/skillhub-cache/
+```
+
+常用认证和同步参数：
+
+```bash
+ticiou skillhub login --registry http://localhost:3000 --token sk_xxx
+SKILLHUB_TOKEN=sk_xxx ticiou skillhub whoami --registry http://localhost:3000
+ticiou skillhub whoami --ask-token
+ticiou skill list --remote --anonymous
+ticiou use -u kaibin.xu --registry http://localhost:3000 --token sk_xxx
+ticiou use -u kaibin.xu --ask-token
+ticiou use -u kaibin.xu --anonymous
+ticiou skill sync --frozen
+```
+
+`--token` 只用于当前命令；`SKILLHUB_TOKEN` 优先于本机凭据；`--ask-token` 允许交互粘贴 token；`--anonymous` 只访问公开 skills；`--frozen` 只检查远端状态，不写 lock、缓存或渲染文件。
+
+也可以加入 selector，让 profile 跟踪一组远端 skills：
+
+```bash
+ticiou skill add --namespace emrois --owner self --label active
+```
+
+生成的 `.ticiou/config.yaml` 会记录当前用户的 SkillHub selection，例如：
+
+```yaml
+profiles:
+  users:
+    kaibin.xu:
+      skillhub:
+        registry: http://localhost:3000
+        auto_refresh: false
+        background_check: true
+        update_policy: prompt
+        new_skill_policy: prompt
+        deleted_skill_policy: keep-cache
+        selections:
+          - namespace: emrois
+            slug: api-review
+            policy: auto
+```
+
+历史打包在 Ticiou 源码里的 profile skills 仍默认启用，以兼容现有团队使用方式。需要迁移到纯 SkillHub 远端 skills 时，可以在 `.ticiou/config.yaml` 中关闭：
+
+```yaml
+render:
+  legacy_packaged_skills: false
 ```
 
 启用 Copilot：
@@ -125,7 +201,30 @@ ticiou install copilot
 ticiou use -u <user>
 ```
 
-激活用户 profile，渲染团队共享资源和当前用户资源。
+激活用户 profile，渲染团队共享资源和当前用户资源；如果该用户配置了 SkillHub selections，会同步 lock/cache 并渲染远端 skills。支持 `--registry`、`--token`、`--ask-token`、`--anonymous` 和 `--frozen`。
+
+```bash
+ticiou skillhub login --registry <url>
+ticiou skillhub whoami --registry <url>
+ticiou skillhub logout --registry <url>
+```
+
+保存、查看或删除当前机器上的 SkillHub token。`login` 可传 `--token` 或读取 `SKILLHUB_TOKEN`，未传 token 且终端可交互时会提示输入。
+
+```bash
+ticiou skill list --remote
+```
+
+列出远端 SkillHub skills，可使用 `--namespace`、`--owner self`、`--label` 和 `--query` 过滤。
+
+```bash
+ticiou skill add <namespace>/<slug>
+ticiou skill add --namespace <namespace> --owner self --label <label>
+ticiou skill remove <namespace>/<slug>
+ticiou skill sync
+```
+
+把远端 skill 或 selector 加入当前用户 profile，移除 explicit selection，或同步当前 profile 的远端 skills。`skill sync --frozen` 适合 CI 检查，不会修改 lock、缓存或渲染文件。
 
 ```bash
 ticiou clear user

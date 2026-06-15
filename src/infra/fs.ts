@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, readFile, readdir, rmdir, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join, posix, resolve } from "node:path";
+import { dirname, isAbsolute, join, posix, relative, resolve } from "node:path";
 
 export async function pathExists(path: string): Promise<boolean> {
   try {
@@ -45,7 +45,7 @@ export async function removeEmptyAncestorDirectories(startDirectory: string, sto
   let current = resolve(startDirectory);
   const stop = resolve(stopDirectory);
 
-  while (current !== stop && current.startsWith(`${stop}/`)) {
+  while (current !== stop && isPathInside(current, stop)) {
     try {
       await rmdir(current);
     } catch (error) {
@@ -56,6 +56,11 @@ export async function removeEmptyAncestorDirectories(startDirectory: string, sto
     }
     current = dirname(current);
   }
+}
+
+function isPathInside(child: string, parent: string): boolean {
+  const relativePath = relative(parent, child);
+  return relativePath.length > 0 && !relativePath.startsWith("..") && !isAbsolute(relativePath);
 }
 
 export function normalizeContent(content: string): string {

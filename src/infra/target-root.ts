@@ -37,8 +37,27 @@ async function findGitRoot(cwd: string): Promise<string> {
 }
 
 async function hasGitMarker(directory: string): Promise<boolean> {
+  const markerPath = join(directory, ".git");
   try {
-    await stat(join(directory, ".git"));
+    const marker = await stat(markerPath);
+    if (marker.isFile()) {
+      return true;
+    }
+    if (!marker.isDirectory()) {
+      return false;
+    }
+    return (await pathExists(join(markerPath, "HEAD"))) || (await pathExists(join(markerPath, "config")));
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
     return true;
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") {

@@ -35,6 +35,7 @@ describe("resolveTargetRoot", () => {
     const root = await makeTempRoot();
     const nested = join(root, "services", "api");
     await mkdir(join(root, ".git"));
+    await writeFile(join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
     await mkdir(nested, { recursive: true });
 
     await expect(resolveTargetRoot({ cwd: nested, mode: "git-root" })).resolves.toBe(root);

@@ -6,8 +6,15 @@ import {
   getStatus,
   initProject,
   installPlatform,
+  addSkill,
+  listSkills,
+  loginSkillHub,
+  logoutSkillHub,
+  removeSkill,
   setupProject,
+  syncSkills,
   useProfile,
+  whoamiSkillHub,
 } from "../app/commands/index.js";
 import { isPlatform, isTargetMode } from "../domain/types.js";
 import type { Platform, TargetMode } from "../domain/types.js";
@@ -85,8 +92,22 @@ export function createProgram(): Command {
     .description("Activate a user profile and render enabled platform resources")
     .requiredOption("-u, --user <user>", "User profile id")
     .option("--target <mode>", "Target resolution mode: cwd or git-root", parseTargetMode)
-    .action(async (options: { user: string; target?: TargetMode }) => {
-      const result = await useProfile({ cwd: process.cwd(), user: options.user, target: options.target });
+    .option("--registry <url>", "SkillHub registry URL")
+    .option("--token <token>", "SkillHub token for this command only")
+    .option("--ask-token", "Prompt for a SkillHub token when needed")
+    .option("--anonymous", "Disable saved/env token lookup and use public SkillHub access")
+    .option("--frozen", "Do not write SkillHub lock changes")
+    .action(async (options: { user: string; target?: TargetMode; registry?: string; token?: string; askToken?: boolean; anonymous?: boolean; frozen?: boolean }) => {
+      const result = await useProfile({
+        cwd: process.cwd(),
+        user: options.user,
+        target: options.target,
+        registry: options.registry,
+        token: options.token,
+        askToken: options.askToken,
+        anonymous: options.anonymous,
+        frozen: options.frozen,
+      });
       printOutput(
         formatCommandResult({
           title: "Ticiou use",
@@ -94,6 +115,97 @@ export function createProgram(): Command {
           nextAction: "ticiou doctor",
         }),
       );
+    });
+
+  const skillhub = program.command("skillhub").description("Manage SkillHub credentials");
+  skillhub
+    .command("login")
+    .description("Save a SkillHub token for this user account")
+    .option("--registry <url>", "SkillHub registry URL")
+    .option("--token <token>", "SkillHub token")
+    .option("--no-save", "Verify the token without saving it locally")
+    .action(async (options: { registry?: string; token?: string; save?: boolean }) => {
+      const result = await loginSkillHub({ cwd: process.cwd(), registry: options.registry, token: options.token, save: options.save });
+      printOutput(formatCommandResult({ title: "Ticiou skillhub login", messages: result.messages }));
+    });
+  skillhub
+    .command("whoami")
+    .description("Show the current SkillHub user")
+    .option("--registry <url>", "SkillHub registry URL")
+    .option("--token <token>", "SkillHub token for this command only")
+    .option("--ask-token", "Prompt for a SkillHub token when needed")
+    .option("--anonymous", "Disable saved/env token lookup")
+    .action(async (options: { registry?: string; token?: string; askToken?: boolean; anonymous?: boolean }) => {
+      const result = await whoamiSkillHub({ cwd: process.cwd(), ...options });
+      printOutput(formatCommandResult({ title: "Ticiou skillhub whoami", messages: result.messages }));
+    });
+  skillhub
+    .command("logout")
+    .description("Remove the saved SkillHub token for a registry")
+    .option("--registry <url>", "SkillHub registry URL")
+    .action(async (options: { registry?: string }) => {
+      const result = await logoutSkillHub({ cwd: process.cwd(), registry: options.registry });
+      printOutput(formatCommandResult({ title: "Ticiou skillhub logout", messages: result.messages }));
+    });
+
+  const skill = program.command("skill").description("Manage SkillHub skills for the active profile");
+  skill
+    .command("list")
+    .description("List remote SkillHub skills")
+    .option("-u, --user <user>", "Ticiou profile id")
+    .option("--remote", "List remote SkillHub skills", true)
+    .option("--registry <url>", "SkillHub registry URL")
+    .option("--token <token>", "SkillHub token for this command only")
+    .option("--ask-token", "Prompt for a SkillHub token when needed")
+    .option("--anonymous", "Disable saved/env token lookup")
+    .option("--namespace <namespace>", "Filter by namespace")
+    .option("--owner <owner>", "Filter by owner, e.g. self")
+    .option("--label <label>", "Filter by label")
+    .option("-q, --query <query>", "Search query")
+    .action(async (options: { user?: string; remote?: boolean; registry?: string; token?: string; askToken?: boolean; anonymous?: boolean; namespace?: string; owner?: string; label?: string; query?: string }) => {
+      const result = await listSkills({ cwd: process.cwd(), q: options.query, ...options });
+      printOutput(formatCommandResult({ title: "Ticiou skill list", messages: result.messages }));
+    });
+  skill
+    .command("add")
+    .description("Add a SkillHub skill or selector to the active profile")
+    .argument("[skill]", "Skill reference: <namespace>/<slug>")
+    .option("-u, --user <user>", "Ticiou profile id")
+    .option("--registry <url>", "SkillHub registry URL")
+    .option("--token <token>", "SkillHub token for this command only")
+    .option("--ask-token", "Prompt for a SkillHub token when needed")
+    .option("--anonymous", "Disable saved/env token lookup")
+    .option("--namespace <namespace>", "Selector namespace")
+    .option("--owner <owner>", "Selector owner, e.g. self")
+    .option("--owner-id <ownerId>", "Selector owner id")
+    .option("--label <label>", "Selector label")
+    .option("--version <version>", "Pin a skill version")
+    .action(async (skillRef: string | undefined, options: { user?: string; registry?: string; token?: string; askToken?: boolean; anonymous?: boolean; namespace?: string; owner?: string; ownerId?: string; label?: string; version?: string }) => {
+      const result = await addSkill({ cwd: process.cwd(), skillRef, ...options });
+      printOutput(formatCommandResult({ title: "Ticiou skill add", messages: result.messages, nextAction: "ticiou skill sync" }));
+    });
+  skill
+    .command("remove")
+    .description("Remove a SkillHub skill selection from the active profile")
+    .argument("<skill>", "Skill reference: <namespace>/<slug>")
+    .option("-u, --user <user>", "Ticiou profile id")
+    .option("--registry <url>", "SkillHub registry URL")
+    .action(async (skillRef: string, options: { user?: string; registry?: string }) => {
+      const result = await removeSkill({ cwd: process.cwd(), skillRef, ...options });
+      printOutput(formatCommandResult({ title: "Ticiou skill remove", messages: result.messages }));
+    });
+  skill
+    .command("sync")
+    .description("Synchronize enabled SkillHub skills")
+    .option("-u, --user <user>", "Ticiou profile id")
+    .option("--registry <url>", "SkillHub registry URL")
+    .option("--token <token>", "SkillHub token for this command only")
+    .option("--ask-token", "Prompt for a SkillHub token when needed")
+    .option("--anonymous", "Disable saved/env token lookup")
+    .option("--frozen", "Check without writing lock or rendered files")
+    .action(async (options: { user?: string; registry?: string; token?: string; askToken?: boolean; anonymous?: boolean; frozen?: boolean }) => {
+      const result = await syncSkills({ cwd: process.cwd(), ...options });
+      printOutput(formatCommandResult({ title: "Ticiou skill sync", messages: result.messages }));
     });
 
   program

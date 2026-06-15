@@ -21,6 +21,10 @@ export async function collectManagedResourceFiles(
   const profilesRoot = resolveRuntimeProfilesDirectory();
 
   for (const kind of RESOURCE_KINDS) {
+    if (kind === "skills" && !config.render.legacyPackagedSkills) {
+      continue;
+    }
+
     files.push(
       ...(await collectResourceKindFiles({
         targetRoot,

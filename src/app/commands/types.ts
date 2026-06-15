@@ -13,6 +13,11 @@ export interface InstallPlatformOptions extends CommandOptions {
 
 export interface UseProfileOptions extends CommandOptions {
   user: string;
+  registry?: string;
+  token?: string;
+  askToken?: boolean;
+  anonymous?: boolean;
+  frozen?: boolean;
 }
 
 export interface SetupProjectOptions extends CommandOptions {

@@ -14,7 +14,10 @@ import type { ClearResourcesOptions, CommandResult } from "../types.js";
 export async function clearResources(options: ClearResourcesOptions): Promise<CommandResult> {
   const targetRoot = await resolveTargetRoot({ cwd: options.cwd, mode: options.target });
   const config = await readConfig(targetRoot);
-  const manifest = await clearManagedFiles(targetRoot, (entry) => options.scope === "all" || entry.source === "profile");
+  const manifest = await clearManagedFiles(
+    targetRoot,
+    (entry) => options.scope === "all" || entry.source === "profile" || entry.source === "skillhub",
+  );
   if (config !== undefined && getEnabledPlatforms(config).includes("claude")) {
     await uninstallClaudeLocalProfilePlugin({
       targetRoot,
