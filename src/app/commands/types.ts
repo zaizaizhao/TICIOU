@@ -1,5 +1,6 @@
 import type { Platform, TargetMode } from "../../domain/types.js";
 import type { CommandRunner } from "../../infra/command-runner.js";
+import type { DiscoverItem } from "../../skillhub/types.js";
 
 export interface CommandOptions {
   cwd: string;
@@ -21,9 +22,23 @@ export interface UseProfileOptions extends CommandOptions {
 }
 
 export interface SetupProjectOptions extends CommandOptions {
-  user: string;
+  user?: string;
   platforms: Platform[];
+  registry?: string;
+  token?: string;
+  askToken?: boolean;
+  yes?: boolean;
+  skillSelector?: SkillSelector;
+  fetchImpl?: typeof fetch;
 }
+
+export interface SkillSelectorContext {
+  user: string;
+  registry: string;
+  items: DiscoverItem[];
+}
+
+export type SkillSelector = (context: SkillSelectorContext) => Promise<DiscoverItem[]>;
 
 export type ClearScope = "user" | "all";
 
@@ -31,9 +46,16 @@ export interface ClearResourcesOptions extends CommandOptions {
   scope: ClearScope;
 }
 
+export type CommandMessageTone = "success" | "warning" | "error";
+
+export type CommandMessage = string | {
+  text: string;
+  tone?: CommandMessageTone;
+};
+
 export interface CommandResult {
   targetRoot: string;
-  messages: string[];
+  messages: CommandMessage[];
 }
 
 export interface StatusResult {
@@ -46,5 +68,5 @@ export interface StatusResult {
 export interface DoctorResult {
   targetRoot: string;
   ok: boolean;
-  messages: string[];
+  messages: CommandMessage[];
 }

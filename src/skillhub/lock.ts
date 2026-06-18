@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
+import { slugify } from "../domain/resource-names.js";
 import { readTextFileIfExists } from "../infra/fs.js";
-import { SKILLHUB_LOCK_PATH } from "../project/paths.js";
+import { SKILLHUB_LEGACY_LOCK_PATH, SKILLHUB_LOCKS_DIR } from "../project/paths.js";
 import type { SkillHubLockEntry, SkillHubLockFile } from "./types.js";
 
 export async function readSkillHubLock(
@@ -10,15 +12,44 @@ export async function readSkillHubLock(
   profile: string,
   registry: string,
 ): Promise<SkillHubLockFile> {
-  const path = join(targetRoot, ...SKILLHUB_LOCK_PATH.split("/"));
+  const path = skillHubLockPath(targetRoot, profile, registry);
   const content = await readTextFileIfExists(path);
   if (content === undefined) {
+    const legacyLock = await readLegacySkillHubLock(targetRoot, profile, registry);
+    if (legacyLock !== undefined) {
+      return legacyLock;
+    }
     return createEmptyLock(profile, registry);
   }
 
+  return parseSkillHubLock(content, profile, registry, path);
+}
+
+export async function writeSkillHubLock(targetRoot: string, lock: SkillHubLockFile): Promise<void> {
+  const path = skillHubLockPath(targetRoot, lock.profile, lock.registry);
+  const tempPath = `${path}.tmp`;
+  const nextLock: SkillHubLockFile = {
+    ...lock,
+    generatedAt: new Date().toISOString(),
+    skills: lock.skills
+      .slice()
+      .sort((left, right) => `${left.namespace}/${left.slug}`.localeCompare(`${right.namespace}/${right.slug}`)),
+  };
+
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(tempPath, `${JSON.stringify(nextLock, null, 2)}\n`, "utf8");
+  await rename(tempPath, path);
+}
+
+function parseSkillHubLock(
+  content: string,
+  profile: string,
+  registry: string,
+  pathForError: string,
+): SkillHubLockFile {
   const parsed = JSON.parse(content) as Partial<SkillHubLockFile>;
   if (parsed.version !== 1 || !Array.isArray(parsed.skills)) {
-    throw new Error("Unsupported .ticiou/.runtime/skillhub-lock.json format. Expected version: 1.");
+    throw new Error(`Unsupported ${pathForError} format. Expected version: 1.`);
   }
 
   if (parsed.profile !== profile || parsed.registry !== registry) {
@@ -36,22 +67,6 @@ export async function readSkillHubLock(
     generatedAt: typeof parsed.generatedAt === "string" ? parsed.generatedAt : "",
     skills: parsed.skills.map(normalizeLockEntry),
   };
-}
-
-export async function writeSkillHubLock(targetRoot: string, lock: SkillHubLockFile): Promise<void> {
-  const path = join(targetRoot, ...SKILLHUB_LOCK_PATH.split("/"));
-  const tempPath = `${path}.tmp`;
-  const nextLock: SkillHubLockFile = {
-    ...lock,
-    generatedAt: new Date().toISOString(),
-    skills: lock.skills
-      .slice()
-      .sort((left, right) => `${left.namespace}/${left.slug}`.localeCompare(`${right.namespace}/${right.slug}`)),
-  };
-
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(tempPath, `${JSON.stringify(nextLock, null, 2)}\n`, "utf8");
-  await rename(tempPath, path);
 }
 
 export function upsertLockEntry(lock: SkillHubLockFile, entry: SkillHubLockEntry): SkillHubLockFile {
@@ -115,4 +130,38 @@ function normalizeLockEntry(value: unknown): SkillHubLockEntry {
 
 function lockKey(namespace: string, slug: string): string {
   return `${namespace}/${slug}`;
+}
+
+async function readLegacySkillHubLock(
+  targetRoot: string,
+  profile: string,
+  registry: string,
+): Promise<SkillHubLockFile | undefined> {
+  const legacyPath = join(targetRoot, ...SKILLHUB_LEGACY_LOCK_PATH.split("/"));
+  const legacyContent = await readTextFileIfExists(legacyPath);
+  if (legacyContent === undefined) {
+    return undefined;
+  }
+
+  try {
+    return parseSkillHubLock(legacyContent, profile, registry, SKILLHUB_LEGACY_LOCK_PATH);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("SkillHub lock belongs to profile ")) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+function skillHubLockPath(targetRoot: string, profile: string, registry: string): string {
+  return join(
+    targetRoot,
+    ...SKILLHUB_LOCKS_DIR.split("/"),
+    slugify(profile),
+    `${registryHash(registry)}.json`,
+  );
+}
+
+function registryHash(registry: string): string {
+  return createHash("sha256").update(registry).digest("hex").slice(0, 12);
 }

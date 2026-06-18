@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, posix, relative, resolve } from "node:path";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, posix, relative, resolve } from "node:path";
 
 import { unzipSync } from "fflate";
 
@@ -14,6 +14,8 @@ import { SKILLHUB_CACHE_DIR } from "../project/paths.js";
 import { normalizeSkillFrontmatterName } from "../rendering/skill-frontmatter.js";
 import type { SkillHubClient } from "./client.js";
 import type { ResolveResponse, SkillHubLockEntry } from "./types.js";
+
+const CACHE_METADATA_FILE = ".ticiou-skillhub-cache.json";
 
 export interface EnsureCachedSkillOptions {
   targetRoot: string;
@@ -30,10 +32,9 @@ export async function ensureCachedSkill(options: EnsureCachedSkillOptions): Prom
   const resolved = await options.client.resolve(options.namespace, options.slug, options.version);
   const cacheRoot = skillCacheRoot(options.targetRoot, options.registry, resolved);
 
-  if (!(await pathExists(join(cacheRoot, "SKILL.md")))) {
+  if (!(await cacheMatchesResolvedSkill(cacheRoot, resolved))) {
     const buffer = await options.client.download(options.namespace, options.slug, resolved.version);
-    await rm(cacheRoot, { recursive: true, force: true });
-    await extractZip(buffer, cacheRoot);
+    await replaceCachedSkill(buffer, cacheRoot, resolved);
   }
 
   const outputDirectoryName = skillHubOutputDirectoryName(options.namespace, options.slug);
@@ -62,7 +63,7 @@ export async function collectSkillHubManagedFiles(options: {
   const files: ManagedFile[] = [];
 
   for (const entry of options.lockEntries) {
-    if (entry.status === "disabled") {
+    if (!shouldRenderLockEntry(entry)) {
       continue;
     }
 
@@ -71,15 +72,23 @@ export async function collectSkillHubManagedFiles(options: {
       slug: entry.slug,
       version: entry.version,
     });
-    if (!(await pathExists(join(cacheRoot, "SKILL.md")))) {
+    if (!(await hasCachedSkill(options.targetRoot, options.registry, entry))) {
       continue;
     }
 
     const outputDirectoryName = skillHubOutputDirectoryName(entry.namespace, entry.slug);
     for (const resourceFile of await listFilesRecursive(cacheRoot)) {
-      const contentBuffer = await readFile(join(cacheRoot, ...resourceFile.split("/")), "utf8");
+      if (resourceFile === CACHE_METADATA_FILE) {
+        continue;
+      }
+
       const content =
-        resourceFile === "SKILL.md" ? normalizeSkillFrontmatterName(contentBuffer, outputDirectoryName) : contentBuffer;
+        resourceFile === "SKILL.md"
+          ? normalizeSkillFrontmatterName(
+              await readFile(join(cacheRoot, ...resourceFile.split("/")), "utf8"),
+              outputDirectoryName,
+            )
+          : await readFile(join(cacheRoot, ...resourceFile.split("/")));
 
       for (const platform of options.platforms) {
         files.push({
@@ -96,16 +105,18 @@ export async function collectSkillHubManagedFiles(options: {
   return files;
 }
 
+function shouldRenderLockEntry(entry: SkillHubLockEntry): boolean {
+  return entry.status === "installed" || entry.status === "update_available" || entry.status === "stale_cache";
+}
+
 export async function hasCachedSkill(targetRoot: string, registry: string, entry: SkillHubLockEntry): Promise<boolean> {
-  return pathExists(
-    join(
-      skillCacheRoot(targetRoot, registry, {
-        namespace: entry.namespace,
-        slug: entry.slug,
-        version: entry.version,
-      }),
-      "SKILL.md",
-    ),
+  return cacheMatchesResolvedSkill(
+    skillCacheRoot(targetRoot, registry, {
+      namespace: entry.namespace,
+      slug: entry.slug,
+      version: entry.version,
+    }),
+    entry,
   );
 }
 
@@ -144,6 +155,114 @@ async function extractZip(buffer: ArrayBuffer, targetDir: string): Promise<void>
     await mkdir(dirname(filePath), { recursive: true });
     await writeFile(filePath, data);
   }
+}
+
+interface SkillCacheMetadata {
+  schemaVersion: 1;
+  namespace: string;
+  slug: string;
+  version: string;
+  fingerprint: string;
+}
+
+async function cacheMatchesResolvedSkill(
+  cacheRoot: string,
+  skill: Pick<ResolveResponse, "namespace" | "slug" | "version" | "fingerprint">,
+): Promise<boolean> {
+  if (!(await pathExists(join(cacheRoot, "SKILL.md")))) {
+    return false;
+  }
+
+  const metadata = await readCacheMetadata(cacheRoot);
+  return (
+    metadata?.schemaVersion === 1 &&
+    metadata.namespace === skill.namespace &&
+    metadata.slug === skill.slug &&
+    metadata.version === skill.version &&
+    metadata.fingerprint === skill.fingerprint
+  );
+}
+
+async function replaceCachedSkill(
+  buffer: ArrayBuffer,
+  cacheRoot: string,
+  skill: Pick<ResolveResponse, "namespace" | "slug" | "version" | "fingerprint">,
+): Promise<void> {
+  const cacheParent = dirname(cacheRoot);
+  const tempRoot = uniqueSiblingDirectory(cacheRoot, "tmp");
+  const backupRoot = uniqueSiblingDirectory(cacheRoot, "backup");
+  let backupCreated = false;
+
+  await mkdir(cacheParent, { recursive: true });
+
+  try {
+    await extractZip(buffer, tempRoot);
+    await writeCacheMetadata(tempRoot, {
+      schemaVersion: 1,
+      namespace: skill.namespace,
+      slug: skill.slug,
+      version: skill.version,
+      fingerprint: skill.fingerprint,
+    });
+
+    if (await pathExists(cacheRoot)) {
+      await rename(cacheRoot, backupRoot);
+      backupCreated = true;
+    }
+
+    try {
+      await rename(tempRoot, cacheRoot);
+    } catch (error) {
+      if (backupCreated) {
+        await rename(backupRoot, cacheRoot).catch(() => undefined);
+        backupCreated = false;
+      }
+      throw error;
+    }
+
+    if (backupCreated) {
+      await rm(backupRoot, { recursive: true, force: true }).catch(() => undefined);
+    }
+  } catch (error) {
+    await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
+    if (backupCreated && !(await pathExists(cacheRoot))) {
+      await rename(backupRoot, cacheRoot).catch(() => undefined);
+    } else {
+      await rm(backupRoot, { recursive: true, force: true }).catch(() => undefined);
+    }
+    throw error;
+  }
+}
+
+async function readCacheMetadata(cacheRoot: string): Promise<SkillCacheMetadata | undefined> {
+  const metadataPath = join(cacheRoot, CACHE_METADATA_FILE);
+  if (!(await pathExists(metadataPath))) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(await readFile(metadataPath, "utf8")) as Partial<SkillCacheMetadata>;
+    if (
+      parsed.schemaVersion !== 1 ||
+      typeof parsed.namespace !== "string" ||
+      typeof parsed.slug !== "string" ||
+      typeof parsed.version !== "string" ||
+      typeof parsed.fingerprint !== "string"
+    ) {
+      return undefined;
+    }
+    return parsed as SkillCacheMetadata;
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeCacheMetadata(cacheRoot: string, metadata: SkillCacheMetadata): Promise<void> {
+  await writeFile(join(cacheRoot, CACHE_METADATA_FILE), `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
+}
+
+function uniqueSiblingDirectory(path: string, prefix: string): string {
+  return join(dirname(path), `.${prefix}-${basename(path)}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 }
 
 function safeJoin(targetDir: string, entryName: string): string {

@@ -114,15 +114,21 @@ export async function resolveToken(options: ResolveTokenOptions): Promise<Resolv
 }
 
 export class TerminalTokenPrompt implements TokenPrompt {
+  constructor(
+    private readonly input: NodeJS.ReadStream = process.stdin,
+    private readonly output: NodeJS.WriteStream = process.stdout,
+  ) {}
+
   async askToken(registry: string): Promise<{ token?: string; save: boolean }> {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const rl = readline.createInterface({ input: this.input, output: this.output });
+    const lines = rl[Symbol.asyncIterator]();
     try {
-      console.log(`SkillHub token not found for ${registry}.`);
-      const token = await askHidden("Paste SkillHub token: ");
+      this.output.write(`SkillHub token not found for ${registry}.\n`);
+      const token = await askLine(lines, this.output, "Paste SkillHub token: ");
       if (token.trim().length === 0) {
         return { save: false };
       }
-      const saveAnswer = await rl.question("Save token locally? [Y/n] ");
+      const saveAnswer = await askLine(lines, this.output, "Save token locally? [Y/n] ");
       return {
         token: token.trim(),
         save: saveAnswer.trim().toLowerCase() !== "n",
@@ -133,56 +139,14 @@ export class TerminalTokenPrompt implements TokenPrompt {
   }
 }
 
-async function askHidden(prompt: string): Promise<string> {
-  if (!process.stdin.isTTY || !process.stdout.isTTY || process.stdin.setRawMode === undefined) {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    try {
-      return await rl.question(prompt);
-    } finally {
-      rl.close();
-    }
-  }
-
-  process.stdout.write(prompt);
-  process.stdin.setRawMode(true);
-  process.stdin.resume();
-  process.stdin.setEncoding("utf8");
-
-  return new Promise((resolve, reject) => {
-    let value = "";
-    const cleanup = (): void => {
-      process.stdin.setRawMode(false);
-      process.stdin.pause();
-      process.stdin.off("data", onData);
-      process.stdin.off("error", onError);
-      process.stdout.write("\n");
-    };
-    const onError = (error: Error): void => {
-      cleanup();
-      reject(error);
-    };
-    const onData = (chunk: string): void => {
-      for (const char of chunk) {
-        if (char === "\u0003") {
-          cleanup();
-          reject(new Error("Token input cancelled."));
-          return;
-        }
-        if (char === "\r" || char === "\n") {
-          cleanup();
-          resolve(value);
-          return;
-        }
-        if (char === "\u0008" || char === "\u007f") {
-          value = value.slice(0, -1);
-          continue;
-        }
-        value += char;
-      }
-    };
-    process.stdin.on("data", onData);
-    process.stdin.on("error", onError);
-  });
+async function askLine(
+  lines: AsyncIterator<string>,
+  output: NodeJS.WriteStream,
+  prompt: string,
+): Promise<string> {
+  output.write(prompt);
+  const result = await lines.next();
+  return result.done === true ? "" : result.value;
 }
 
 async function applyCredentialPermissions(path: string): Promise<void> {

@@ -23,7 +23,6 @@ export interface TiciouConfig {
     prefix: string;
     conflictPolicy: "fail";
     removeStale: boolean;
-    legacyPackagedSkills: boolean;
   };
 }
 
@@ -87,7 +86,6 @@ export function createDefaultConfig(targetRoot: string): TiciouConfig {
       prefix: "ticiou",
       conflictPolicy: "fail",
       removeStale: true,
-      legacyPackagedSkills: true,
     },
   };
 }
@@ -176,10 +174,6 @@ function parseConfig(content: string, targetRoot: string): TiciouConfig {
   if (typeof render?.remove_stale === "boolean") {
     config.render.removeStale = render.remove_stale;
   }
-  if (typeof render?.legacy_packaged_skills === "boolean") {
-    config.render.legacyPackagedSkills = render.legacy_packaged_skills;
-  }
-
   return config;
 }
 
@@ -211,7 +205,6 @@ render:
   prefix: ${config.render.prefix}
   conflict_policy: ${config.render.conflictPolicy}
   remove_stale: ${config.render.removeStale}
-  legacy_packaged_skills: ${config.render.legacyPackagedSkills}
 `;
 }
 

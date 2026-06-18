@@ -23,6 +23,17 @@ export async function writeTextFile(path: string, content: string): Promise<void
   await writeFile(path, content, "utf8");
 }
 
+export type ManagedContent = string | Uint8Array;
+
+export async function writeManagedContentFile(path: string, content: ManagedContent): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  if (typeof content === "string") {
+    await writeFile(path, content, "utf8");
+    return;
+  }
+  await writeFile(path, content);
+}
+
 export async function writeTextFileIfMissing(path: string, content: string): Promise<void> {
   if (await pathExists(path)) {
     return;
@@ -69,6 +80,13 @@ export function normalizeContent(content: string): string {
 
 export function hashContent(content: string): string {
   return createHash("sha256").update(normalizeContent(content)).digest("hex");
+}
+
+export function hashManagedContent(content: ManagedContent): string {
+  if (typeof content === "string") {
+    return hashContent(content);
+  }
+  return createHash("sha256").update(content).digest("hex");
 }
 
 export function toPosixPath(path: string): string {

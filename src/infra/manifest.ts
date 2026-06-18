@@ -1,22 +1,23 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import type { ManagedSource, Platform, ResourceKind } from "../domain/types.js";
 import { MANIFEST_PATH } from "../project/paths.js";
 import {
   hashContent,
+  hashManagedContent,
   joinRelative,
-  normalizeContent,
+  type ManagedContent,
   normalizeRelativePath,
   pathExists,
   removeEmptyAncestorDirectories,
   removeFileIfExists,
-  writeTextFile,
+  writeManagedContentFile,
 } from "./fs.js";
 
 export interface ManagedFile {
   relativePath: string;
-  content: string;
+  content: ManagedContent;
   kind: ResourceKind;
   platform: Platform;
   source: ManagedSource;
@@ -49,31 +50,40 @@ export async function writeManagedFiles(options: WriteManagedFilesOptions): Prom
   const previousFiles = new Map(previousManifest.files.map((entry) => [entry.relativePath, entry]));
   const nextFiles = normalizeManagedFiles(options.files);
   const nextPaths = new Set(nextFiles.map((file) => file.relativePath));
+  const staleFiles = options.removeStale ? staleManifestEntries(previousManifest.files, nextPaths) : [];
 
   await assertFilesCanBeWritten(options.targetRoot, nextFiles, previousFiles);
+  await assertStaleFilesCanBeRemoved(options.targetRoot, staleFiles);
 
-  if (options.removeStale) {
-    await removeStaleFiles(options.targetRoot, previousManifest.files, nextPaths);
+  const rollbackPlan = await createRollbackPlan(options.targetRoot, nextFiles, staleFiles);
+
+  try {
+    for (const file of nextFiles) {
+      await writeManagedContentFile(joinRelative(options.targetRoot, file.relativePath), file.content);
+    }
+
+    if (options.removeStale) {
+      await removeManifestEntries(options.targetRoot, staleFiles);
+    }
+
+    const manifest: RuntimeManifest = {
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      files: nextFiles.map((file) => ({
+        relativePath: file.relativePath,
+        hash: hashManagedContent(file.content),
+        kind: file.kind,
+        platform: file.platform,
+        source: file.source,
+      })),
+    };
+
+    await writeManifest(options.targetRoot, manifest);
+    return manifest;
+  } catch (error) {
+    await rollbackManagedFileChanges(options.targetRoot, rollbackPlan);
+    throw error;
   }
-
-  for (const file of nextFiles) {
-    await writeTextFile(joinRelative(options.targetRoot, file.relativePath), normalizeContent(file.content));
-  }
-
-  const manifest: RuntimeManifest = {
-    version: 1,
-    generatedAt: new Date().toISOString(),
-    files: nextFiles.map((file) => ({
-      relativePath: file.relativePath,
-      hash: hashContent(file.content),
-      kind: file.kind,
-      platform: file.platform,
-      source: file.source,
-    })),
-  };
-
-  await writeManifest(options.targetRoot, manifest);
-  return manifest;
 }
 
 export async function clearManagedFiles(
@@ -122,8 +132,17 @@ export async function readManifest(targetRoot: string): Promise<RuntimeManifest>
 
 async function writeManifest(targetRoot: string, manifest: RuntimeManifest): Promise<void> {
   const path = join(targetRoot, MANIFEST_PATH);
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  const manifestDirectory = dirname(path);
+  const tempPath = join(manifestDirectory, `.manifest-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
+  await mkdir(manifestDirectory, { recursive: true });
+
+  try {
+    await writeFile(tempPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    await rename(tempPath, path);
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 function normalizeManagedFiles(files: ManagedFile[]): ManagedFile[] {
@@ -160,33 +179,116 @@ async function assertFilesCanBeWritten(
       throw new Error(`Refusing to overwrite unmanaged file: ${file.relativePath}`);
     }
 
-    const existingContent = await readFile(path, "utf8");
-    const existingHash = hashContent(existingContent);
-    if (existingHash !== previousFile.hash) {
+    if (!(await managedFileMatchesManifest(targetRoot, previousFile))) {
       throw new Error(`Refusing to overwrite modified managed file: ${file.relativePath}`);
     }
   }
 }
 
 async function removeStaleFiles(targetRoot: string, previousFiles: ManifestEntry[], nextPaths: Set<string>): Promise<void> {
-  for (const entry of previousFiles) {
-    if (nextPaths.has(entry.relativePath)) {
-      continue;
-    }
+  await removeManifestEntries(targetRoot, staleManifestEntries(previousFiles, nextPaths));
+}
 
+async function assertStaleFilesCanBeRemoved(targetRoot: string, staleFiles: ManifestEntry[]): Promise<void> {
+  for (const entry of staleFiles) {
+    if (!(await managedFileMatchesManifest(targetRoot, entry))) {
+      throw new Error(`Refusing to remove modified managed file: ${entry.relativePath}`);
+    }
+  }
+}
+
+async function removeManifestEntries(targetRoot: string, entries: ManifestEntry[]): Promise<void> {
+  for (const entry of entries) {
     const path = joinRelative(targetRoot, entry.relativePath);
     if (!(await pathExists(path))) {
       continue;
     }
 
-    const existingContent = await readFile(path, "utf8");
-    if (hashContent(existingContent) !== entry.hash) {
+    if (!(await managedFileMatchesManifest(targetRoot, entry))) {
       throw new Error(`Refusing to remove modified managed file: ${entry.relativePath}`);
     }
 
     await removeFileIfExists(path);
     await removeEmptyAncestorDirectories(dirname(path), managedDirectoryBoundary(targetRoot, entry));
   }
+}
+
+function staleManifestEntries(previousFiles: ManifestEntry[], nextPaths: Set<string>): ManifestEntry[] {
+  return previousFiles.filter((entry) => !nextPaths.has(entry.relativePath));
+}
+
+interface RollbackFileState extends ManifestEntry {
+  content: Uint8Array | undefined;
+}
+
+async function createRollbackPlan(
+  targetRoot: string,
+  nextFiles: ManagedFile[],
+  staleFiles: ManifestEntry[],
+): Promise<RollbackFileState[]> {
+  const rollbackFiles = new Map<string, RollbackFileState>();
+
+  for (const file of nextFiles) {
+    await addRollbackFileState(targetRoot, rollbackFiles, {
+      relativePath: file.relativePath,
+      hash: "",
+      kind: file.kind,
+      platform: file.platform,
+      source: file.source,
+    });
+  }
+
+  for (const entry of staleFiles) {
+    await addRollbackFileState(targetRoot, rollbackFiles, entry);
+  }
+
+  return [...rollbackFiles.values()];
+}
+
+async function addRollbackFileState(
+  targetRoot: string,
+  rollbackFiles: Map<string, RollbackFileState>,
+  entry: ManifestEntry,
+): Promise<void> {
+  if (rollbackFiles.has(entry.relativePath)) {
+    return;
+  }
+
+  const path = joinRelative(targetRoot, entry.relativePath);
+  rollbackFiles.set(entry.relativePath, {
+    ...entry,
+    content: (await pathExists(path)) ? await readFile(path) : undefined,
+  });
+}
+
+async function rollbackManagedFileChanges(targetRoot: string, rollbackPlan: RollbackFileState[]): Promise<void> {
+  for (const entry of rollbackPlan) {
+    const path = joinRelative(targetRoot, entry.relativePath);
+    if (entry.content === undefined) {
+      await removeFileIfExists(path);
+      continue;
+    }
+
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, entry.content);
+  }
+}
+
+async function managedFileMatchesManifest(targetRoot: string, entry: ManifestEntry): Promise<boolean> {
+  const path = joinRelative(targetRoot, entry.relativePath);
+  if (!(await pathExists(path))) {
+    return true;
+  }
+
+  const existingContent = await readFile(path);
+  return contentMatchesManifestHash(existingContent, entry.hash);
+}
+
+function contentMatchesManifestHash(content: Uint8Array, expectedHash: string): boolean {
+  if (hashManagedContent(content) === expectedHash) {
+    return true;
+  }
+  return hashContent(Buffer.from(content).toString("utf8")) === expectedHash;
 }
 
 function managedDirectoryBoundary(targetRoot: string, entry: ManifestEntry): string {

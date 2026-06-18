@@ -21,10 +21,6 @@ export async function collectManagedResourceFiles(
   const profilesRoot = resolveRuntimeProfilesDirectory();
 
   for (const kind of RESOURCE_KINDS) {
-    if (kind === "skills" && !config.render.legacyPackagedSkills) {
-      continue;
-    }
-
     files.push(
       ...(await collectResourceKindFiles({
         targetRoot,
@@ -35,6 +31,9 @@ export async function collectManagedResourceFiles(
         platforms,
       })),
     );
+    if (kind === "skills") {
+      continue;
+    }
     files.push(
       ...(await collectResourceKindFiles({
         targetRoot,
@@ -123,15 +122,15 @@ async function collectSkillDirectoryFiles(options: CollectResourceKindFilesOptio
     });
 
     for (const resourceFile of resourceFiles) {
-      const rawContent = await readFile(join(skillRoot, ...resourceFile.split("/")), "utf8");
       const content =
-        resourceFile === "SKILL.md" ? normalizeSkillFrontmatterName(rawContent, outputDirectoryName) : rawContent;
+        resourceFile === "SKILL.md"
+          ? normalizeSkillFrontmatterName(
+              await readFile(join(skillRoot, ...resourceFile.split("/")), "utf8"),
+              outputDirectoryName,
+            )
+          : await readFile(join(skillRoot, ...resourceFile.split("/")));
 
       for (const platform of options.platforms) {
-        if (platform === "claude" && options.source === "profile") {
-          continue;
-        }
-
         files.push({
           relativePath: posix.join(platformResourceRoot(platform, options.kind), outputDirectoryName, resourceFile),
           content,

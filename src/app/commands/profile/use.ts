@@ -7,12 +7,6 @@ import {
   packagedProfileExists,
   writeCurrentProfile,
 } from "../../../project/profile-store.js";
-import {
-  collectClaudeLocalProfilePluginFiles,
-  installClaudeLocalProfilePlugin,
-  syncClaudeLocalProfilePluginSettings,
-  uninstallClaudeLocalProfilePlugin,
-} from "../../../rendering/claude-local-plugin.js";
 import { collectManagedResourceFiles } from "../../../rendering/resources.js";
 import { SkillHubClient } from "../../../skillhub/client.js";
 import { resolveToken } from "../../../skillhub/credentials.js";
@@ -20,7 +14,7 @@ import { collectSkillHubManagedFiles } from "../../../skillhub/install.js";
 import { getSkillHubRuntimeConfig } from "../../../skillhub/selection.js";
 import { syncSelectedSkills } from "../../../skillhub/sync.js";
 import { initProject } from "../project/init.js";
-import type { CommandResult, UseProfileOptions } from "../types.js";
+import type { CommandMessage, CommandResult, UseProfileOptions } from "../types.js";
 
 export async function useProfile(
   options: UseProfileOptions,
@@ -49,7 +43,7 @@ export async function useProfile(
     config,
     enabledPlatforms,
   );
-  const messages: string[] = [];
+  const messages: CommandMessage[] = [];
 
   const skillHubConfig = getSkillHubRuntimeConfig(config, options.user, options.registry);
   if (skillHubConfig.selections.length > 0) {
@@ -63,9 +57,19 @@ export async function useProfile(
     const client = new SkillHubClient(skillHubConfig.registry, resolvedToken.token);
 
     if (resolvedToken.token !== undefined) {
-      const whoami = await client.whoami();
-      if (whoami.handle !== options.user) {
-        messages.push(`SkillHub token user ${whoami.handle} differs from Ticiou profile ${options.user}`);
+      try {
+        const whoami = await client.whoami();
+        if (whoami.handle !== options.user) {
+          messages.push({
+            text: `SkillHub token user ${whoami.handle} differs from Ticiou profile ${options.user}`,
+            tone: "warning",
+          });
+        }
+      } catch (error) {
+        messages.push({
+          text: `SkillHub whoami check failed: ${error instanceof Error ? error.message : String(error)}`,
+          tone: "warning",
+        });
       }
     }
 
@@ -90,41 +94,11 @@ export async function useProfile(
     );
   }
 
-  let hasClaudePluginFiles = false;
-  if (enabledPlatforms.includes("claude") && config.render.legacyPackagedSkills) {
-    const pluginFiles = await collectClaudeLocalProfilePluginFiles(
-      options.user,
-      config,
-    );
-    hasClaudePluginFiles = pluginFiles.length > 0;
-    managedFiles.push(...pluginFiles);
-  }
-
   await writeManagedFiles({
     targetRoot,
     files: managedFiles,
     removeStale: config.render.removeStale,
   });
-  if (enabledPlatforms.includes("claude")) {
-    await uninstallClaudeLocalProfilePlugin({
-      targetRoot,
-      config,
-      runner: options.runner,
-    });
-    await syncClaudeLocalProfilePluginSettings(
-      targetRoot,
-      hasClaudePluginFiles ? options.user : undefined,
-      config,
-    );
-    if (hasClaudePluginFiles) {
-      await installClaudeLocalProfilePlugin({
-        targetRoot,
-        user: options.user,
-        config,
-        runner: options.runner,
-      });
-    }
-  }
   await writeCurrentProfile(targetRoot, options.user);
 
   return {

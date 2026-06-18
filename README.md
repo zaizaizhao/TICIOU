@@ -27,7 +27,7 @@ Claude / Copilot profile compiler for teams.
 - Claude、Copilot 的目录结构不同。
 - 换项目、换机器、换同事时，很难保持一致。
 
-提效把这些资源收拢成可发包、可审查、可复用的 profile：
+提效把这些资源收拢成可发包、可审查、可复用的 profile，并把 skills 交给 SkillHub 管理：
 
 ```text
 profiles/
@@ -36,8 +36,7 @@ profiles/
   users/yanan.zhao/
 ```
 
-执行 `ticiou setup -u kaibin.xu -p claude` 时，Ticiou 会初始化项目、安装平台 adapter，并把 `shared` 和该用户目录下的资源渲染到当前项目的 `.claude/` 或 `.github/` 中。
-Claude 的用户级 skills 会以本项目 local plugin 方式启用，避免个人上下文作为项目 skill 泄漏到仓库配置中。
+执行 `ticiou setup -p claude` 时，Ticiou 会初始化项目、安装平台 adapter，读取或提示输入 SkillHub token，根据 token 获取当前用户，并让用户选择要在当前项目启用的远端 skills。
 
 ## 支持什么
 
@@ -55,7 +54,14 @@ Claude 的用户级 skills 会以本项目 local plugin 方式启用，避免个
 ```bash
 cd your-project
 
-ticiou setup -u kaibin.xu -p claude
+ticiou setup -p claude
+ticiou doctor
+```
+
+新的默认流程不需要 `-u`：
+
+```bash
+ticiou setup -p claude
 ticiou doctor
 ```
 
@@ -66,14 +72,12 @@ ticiou doctor
 .claude/    # Claude 可读取的配置
 ```
 
-Claude user profile skills 会生成到 `.ticiou/.runtime/claude-plugin-marketplace/`，并由 `ticiou use` 自动执行 Claude Code 的 local plugin 注册/安装流程：
+SkillHub skills 会下载到 `.ticiou/.runtime/skillhub-cache/`，并渲染到平台 skills 目录：
 
 ```text
-profiles/users/kaibin.xu/skills/personal/SKILL.md
-  -> /ticiou-kaibin-xu:personal
+.ticiou/.runtime/skillhub-cache/
+  -> .claude/skills/skillhub-<namespace>-<slug>/SKILL.md
 ```
-
-这会写入 `.claude/settings.local.json`，并在 Claude Code 的本机 plugin cache 中安装当前项目的 local plugin。该文件是本机状态，不应提交到业务仓库。
 
 共享 skills 仍保持项目级扁平输出：
 
@@ -85,13 +89,10 @@ profiles/shared/skills/azure-devops/SKILL.md
 
 ### 使用 SkillHub skills
 
-Ticiou 可以直接连接 SkillHub registry，不依赖 `skillhub` CLI 二进制。登录后把远端 skill 加入当前用户 profile，`ticiou use` 和 `ticiou skill sync` 会按 lock 文件下载并渲染到已启用的平台目录。
+Ticiou 可以直接连接 SkillHub registry，不依赖 `skillhub` CLI 二进制。`setup` 会读取 token、调用 `whoami`、展示可选 skills，并把选择写入当前用户 profile；`ticiou use` 会按 profile 配置同步并渲染，`ticiou skill sync` 会主动检查远端并刷新 lock/cache。
 
 ```bash
-ticiou skillhub login --registry http://localhost:3000
-ticiou skill list --remote --namespace emrois --owner self --label active
-ticiou skill add emrois/api-review
-ticiou use -u kaibin.xu
+ticiou setup -p claude --registry http://localhost:3000
 ticiou skill sync
 ```
 
@@ -107,9 +108,11 @@ ticiou skill sync
 
 ```text
 .ticiou/config.yaml
-.ticiou/.runtime/skillhub-lock.json
+.ticiou/.runtime/skillhub-locks/<profile>/<registry-hash>.json
 .ticiou/.runtime/skillhub-cache/
 ```
+
+旧版 `.ticiou/.runtime/skillhub-lock.json` 会被兼容读取；新版本按 profile 和 registry 分文件，避免多用户切换互相阻断。
 
 常用认证和同步参数：
 
@@ -118,19 +121,23 @@ ticiou skillhub login --registry http://localhost:3000 --token sk_xxx
 SKILLHUB_TOKEN=sk_xxx ticiou skillhub whoami --registry http://localhost:3000
 ticiou skillhub whoami --ask-token
 ticiou skill list --remote --anonymous
-ticiou use -u kaibin.xu --registry http://localhost:3000 --token sk_xxx
-ticiou use -u kaibin.xu --ask-token
-ticiou use -u kaibin.xu --anonymous
+ticiou setup -p claude --registry http://localhost:3000 --token sk_xxx
+ticiou setup -p claude --ask-token
+ticiou setup -p claude --yes
 ticiou skill sync --frozen
 ```
 
-`--token` 只用于当前命令；`SKILLHUB_TOKEN` 优先于本机凭据；`--ask-token` 允许交互粘贴 token；`--anonymous` 只访问公开 skills；`--frozen` 只检查远端状态，不写 lock、缓存或渲染文件。
+`setup` 默认需要 SkillHub token，因为它要通过 `whoami` 确定 profile 用户并读取 `owner:self` 的候选 skills；匿名模式适用于 `skill list --remote --anonymous`、已有 selection 的 `use --anonymous` 或 `skill sync --anonymous`。`--token` 只用于当前命令；`SKILLHUB_TOKEN` 优先于本机凭据；`--ask-token` 允许交互粘贴 token；`--yes` 在非交互环境中启用 discover 到的全部 skills；`--frozen` 只检查远端状态，不写 lock、缓存或渲染文件。
+
+`skill sync` 会强制检查远端最新版本，等价于一次手动 refresh；如果只想按当前 profile 的 `auto_refresh` 策略渲染，可使用 `ticiou use`。
 
 也可以加入 selector，让 profile 跟踪一组远端 skills：
 
 ```bash
 ticiou skill add --namespace emrois --owner self --label active
 ```
+
+selector 会在 `use` / `skill sync` 时通过 SkillHub discover 展开为当前匹配的 skills；不再匹配 selector 的旧 lock entry 会标记为 `missing_remote`，后续渲染不会把它当作新选择继续更新。
 
 生成的 `.ticiou/config.yaml` 会记录当前用户的 SkillHub selection，例如：
 
@@ -151,29 +158,24 @@ profiles:
             policy: auto
 ```
 
-历史打包在 Ticiou 源码里的 profile skills 仍默认启用，以兼容现有团队使用方式。需要迁移到纯 SkillHub 远端 skills 时，可以在 `.ticiou/config.yaml` 中关闭：
-
-```yaml
-render:
-  legacy_packaged_skills: false
-```
+历史打包在 Ticiou 源码里的 user profile skills 不再作为默认 skill 来源。项目 skills 默认来自 SkillHub selections。SkillHub cache 会记录每个包的 namespace、slug、version 和 fingerprint；同版本 fingerprint 变化时会重新下载，提取失败不会替换已有可用 cache。
 
 启用 Copilot：
 
 ```bash
-ticiou setup -u kaibin.xu -p copilot
+ticiou setup -p copilot
 ```
 
 同时启用 Claude 和 Copilot：
 
 ```bash
-ticiou setup -u kaibin.xu -p claude -p copilot
+ticiou setup -p claude -p copilot
 ```
 
 如需把 `.github/` 写到 Git 仓库根目录：
 
 ```bash
-ticiou setup -u kaibin.xu -p copilot --target git-root
+ticiou setup -p copilot --target git-root
 ```
 
 ## 命令
@@ -185,10 +187,10 @@ ticiou init
 初始化当前目录的 `.ticiou/` 运行配置。
 
 ```bash
-ticiou setup -u <user> -p <platform>
+ticiou setup -p <platform>
 ```
 
-一键完成 `ticiou init`、`ticiou install <platform>` 和 `ticiou use -u <user>`。可重复传入 `-p` 同时安装多个平台，例如 `ticiou setup -u kaibin.xu -p claude -p copilot`。
+一键完成 `ticiou init`、`ticiou install <platform>`、SkillHub 登录用户识别、远端 skill 选择和渲染。可重复传入 `-p` 同时安装多个平台，例如 `ticiou setup -p claude -p copilot`。
 
 ```bash
 ticiou install claude
@@ -201,7 +203,7 @@ ticiou install copilot
 ticiou use -u <user>
 ```
 
-激活用户 profile，渲染团队共享资源和当前用户资源；如果该用户配置了 SkillHub selections，会同步 lock/cache 并渲染远端 skills。支持 `--registry`、`--token`、`--ask-token`、`--anonymous` 和 `--frozen`。
+激活用户 profile，渲染团队共享非 skill 资源；如果该用户配置了 SkillHub selections，会同步 lock/cache 并渲染远端 skills。支持 `--registry`、`--token`、`--ask-token`、`--anonymous` 和 `--frozen`。
 
 ```bash
 ticiou skillhub login --registry <url>
@@ -224,7 +226,7 @@ ticiou skill remove <namespace>/<slug>
 ticiou skill sync
 ```
 
-把远端 skill 或 selector 加入当前用户 profile，移除 explicit selection，或同步当前 profile 的远端 skills。`skill sync --frozen` 适合 CI 检查，不会修改 lock、缓存或渲染文件。
+把远端 skill 或 selector 加入当前用户 profile，移除 explicit selection，或同步当前 profile 的远端 skills。selector 会按 `--namespace`、`--owner`、`--label` 等条件发现并同步一组 skills。普通 `skill sync` 会强制检查远端并刷新 lock/cache；`skill sync --frozen` 适合 CI 检查，不会修改 lock、缓存或渲染文件。
 
 ```bash
 ticiou clear user
@@ -263,7 +265,7 @@ pnpm run build
 
 ```bash
 cd your-project
-node /path/to/Ticiou/dist/cli/index.js setup -u kaibin.xu -p claude
+node /path/to/Ticiou/dist/cli/index.js setup -p claude
 ```
 
 或者使用 `npm link`：
@@ -273,7 +275,7 @@ cd /path/to/Ticiou
 npm link
 
 cd your-project
-ticiou setup -u kaibin.xu -p claude
+ticiou setup -p claude
 ```
 
 源码变更后重新构建：
@@ -307,16 +309,16 @@ ticiou use -u kaibin.xu
 
 只会影响 `service-b`。
 
-切换用户时，Ticiou 根据 `.ticiou/.runtime/manifest.json` 删除上一轮仍归 Ticiou 管理的旧文件，并同步 Claude local plugin 安装与配置，保证当前项目只加载当前用户的资源。
+切换用户或重新选择 skills 时，Ticiou 根据 `.ticiou/.runtime/manifest.json` 删除上一轮仍归 Ticiou 管理的旧文件，并按当前 SkillHub selections 渲染远端 skills。
 
 ## 维护方式
 
 推荐团队共同维护 Ticiou 源码仓库：
 
-1. 在 `profiles/shared` 维护团队共享能力。
-2. 在 `profiles/users/<user>` 维护个人能力。
+1. 在 `profiles/shared` 维护团队共享非 skill 能力。
+2. 在 SkillHub 发布、审查和管理 skills。
 3. 通过 CI 构建并发布 npm 包。
-4. 开发者升级 CLI 后，在自己的项目里执行 `ticiou setup -u <user> -p <platform>`。
+4. 开发者升级 CLI 后，在自己的项目里执行 `ticiou setup -p <platform>`。
 
 这样配置可以被 review、版本化和回滚，同时不会把每个人的私有激活状态提交到业务仓库。
 

@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import readline from "node:readline/promises";
 
 import {
   clearResources,
@@ -18,7 +19,8 @@ import {
 } from "../app/commands/index.js";
 import { isPlatform, isTargetMode } from "../domain/types.js";
 import type { Platform, TargetMode } from "../domain/types.js";
-import type { ClearScope } from "../app/commands/index.js";
+import type { ClearScope, SkillSelectorContext } from "../app/commands/index.js";
+import type { DiscoverItem } from "../skillhub/types.js";
 import { formatBrandBanner, formatCommandResult, formatRootHelp, formatStatus } from "./output.js";
 
 export function createProgram(): Command {
@@ -62,17 +64,26 @@ export function createProgram(): Command {
 
   program
     .command("setup")
-    .description("Initialize a project, install platform adapters, and activate a user profile")
-    .requiredOption("-u, --user <user>", "User profile id")
+    .description("Initialize a project, install platform adapters, and activate SkillHub skills")
+    .option("-u, --user <user>", "User profile id for legacy packaged profile activation")
     .option("-p, --platform <platform>", "Platform adapter: claude or copilot", collectPlatform, [] as Platform[])
     .option("--target <mode>", "Target resolution mode: cwd or git-root", parseTargetMode)
-    .action(async (options: { user: string; platform: Platform[]; target?: TargetMode }) => {
+    .option("--registry <url>", "SkillHub registry URL")
+    .option("--token <token>", "SkillHub token for this command only")
+    .option("--ask-token", "Prompt for a SkillHub token when needed")
+    .option("--yes", "Enable all discovered SkillHub skills without prompting")
+    .action(async (options: { user?: string; platform: Platform[]; target?: TargetMode; registry?: string; token?: string; askToken?: boolean; yes?: boolean }) => {
       const platforms = options.platform.length === 0 ? ["claude" as Platform] : options.platform;
       const result = await setupProject({
         cwd: process.cwd(),
         user: options.user,
         platforms,
         target: options.target,
+        registry: options.registry,
+        token: options.token,
+        askToken: options.askToken,
+        yes: options.yes,
+        skillSelector: process.stdin.isTTY && options.yes !== true ? selectSkillsInteractively : undefined,
       });
       printOutput(
         [
@@ -278,6 +289,43 @@ function parseClearScope(value: string): ClearScope {
     throw new Error(`Unsupported clear scope: ${value}. Expected user or all.`);
   }
   return value;
+}
+
+async function selectSkillsInteractively(context: SkillSelectorContext): Promise<DiscoverItem[]> {
+  if (context.items.length === 0) {
+    console.log(`No SkillHub skills found for ${context.user}.`);
+    return [];
+  }
+
+  console.log(`Signed in as ${context.user}`);
+  console.log("");
+  console.log("Select SkillHub skills to enable for this project:");
+  context.items.forEach((item, index) => {
+    const version = item.publishedVersion === undefined ? "" : `@${item.publishedVersion}`;
+    const summary = item.summary === undefined || item.summary.length === 0 ? "" : ` - ${item.summary}`;
+    console.log(`  ${index + 1}. ${item.namespace}/${item.slug}${version}${summary}`);
+  });
+  console.log("");
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (await rl.question("Enable which skills? [all] ")).trim().toLowerCase();
+    if (answer.length === 0 || answer === "all") {
+      return context.items;
+    }
+    if (answer === "none") {
+      return [];
+    }
+
+    const indexes = answer
+      .split(",")
+      .map((part) => Number.parseInt(part.trim(), 10))
+      .filter((value) => Number.isInteger(value) && value >= 1 && value <= context.items.length);
+    const uniqueIndexes = [...new Set(indexes)];
+    return uniqueIndexes.map((index) => context.items[index - 1]).filter((item): item is DiscoverItem => item !== undefined);
+  } finally {
+    rl.close();
+  }
 }
 
 function printOutput(output: string): void {

@@ -1,6 +1,18 @@
 import type { TiciouConfig, SkillHubProfileConfig, SkillHubSelection } from "../project/config.js";
+import type { SkillHubClient } from "./client.js";
 import { DEFAULT_SKILLHUB_REGISTRY, normalizeRegistry } from "./registry.js";
 import type { SkillHubProfileRuntimeConfig } from "./types.js";
+
+export interface ExpandedSkillSelections {
+  selections: SkillHubSelection[];
+  selectorResults: SelectorExpansionResult[];
+}
+
+export interface SelectorExpansionResult {
+  selector: SkillHubSelection;
+  key: string;
+  skills: Array<{ namespace: string; slug: string }>;
+}
 
 export function getSkillHubRuntimeConfig(
   config: TiciouConfig,
@@ -58,6 +70,53 @@ export function removeSelection(profileConfig: SkillHubProfileConfig, namespace:
 
 export function explicitSkillSelections(selections: SkillHubSelection[]): SkillHubSelection[] {
   return selections.filter((selection) => selection.slug !== undefined && selection.slug.length > 0);
+}
+
+export async function expandSkillSelections(
+  client: SkillHubClient,
+  selections: SkillHubSelection[],
+): Promise<ExpandedSkillSelections> {
+  const expanded: SkillHubSelection[] = [];
+  const selectorResults: SelectorExpansionResult[] = [];
+
+  for (const selection of selections) {
+    if (selection.slug !== undefined && selection.slug.length > 0) {
+      expanded.push(selection);
+      continue;
+    }
+
+    const discovered = await client.discover({
+      namespace: selection.namespace,
+      owner: selection.owner,
+      ownerId: selection.ownerId,
+      label: selection.label,
+      page: 0,
+      size: 100,
+    });
+    const skills = discovered.items.map((item) => ({ namespace: item.namespace, slug: item.slug }));
+    selectorResults.push({
+      selector: selection,
+      key: selectorKey(selection),
+      skills,
+    });
+    for (const item of discovered.items) {
+      expanded.push({
+        namespace: item.namespace,
+        slug: item.slug,
+        version: item.publishedVersion,
+        policy: selection.policy,
+        owner: selection.owner,
+        ownerId: selection.ownerId,
+        label: selection.label,
+      });
+    }
+  }
+
+  return { selections: expanded, selectorResults };
+}
+
+export function selectorKey(selection: SkillHubSelection): string {
+  return selectionKey({ ...selection, slug: undefined });
 }
 
 export function parseSkillRef(value: string): { namespace: string; slug: string } {

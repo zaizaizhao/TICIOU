@@ -1,8 +1,8 @@
 import { Chalk } from "chalk";
 
-import type { StatusResult } from "../app/commands/types.js";
+import type { CommandMessage, CommandMessageTone, StatusResult } from "../app/commands/types.js";
 
-type MessageTone = "success" | "warning" | "error";
+type MessageTone = CommandMessageTone;
 
 export interface OutputOptions {
   color?: boolean;
@@ -10,7 +10,7 @@ export interface OutputOptions {
 
 export interface CommandOutputOptions extends OutputOptions {
   title: string;
-  messages: string[];
+  messages: CommandMessage[];
   ok?: boolean;
   nextAction?: string;
 }
@@ -40,9 +40,9 @@ export function formatStatus(status: StatusResult, options: OutputOptions = {}):
   const platforms = status.enabledPlatforms.length === 0 ? "(none)" : status.enabledPlatforms.join(", ");
   const profile = status.currentProfile ?? "(none)";
   const nextAction = status.enabledPlatforms.length === 0
-    ? "ticiou install claude"
+    ? "ticiou setup"
     : status.currentProfile === undefined
-      ? "ticiou use -u <user>"
+      ? "ticiou setup"
       : "ticiou doctor";
 
   return [
@@ -95,7 +95,7 @@ export function formatRootHelp(options: OutputOptions = {}): string {
     `  ${color.command("init")}              Initialize Ticiou project state`,
     `  ${color.command("install claude")}    Install Claude adapter`,
     `  ${color.command("install copilot")}   Install Copilot adapter`,
-    `  ${color.command("setup -u <user>")}   Initialize, install, and activate`,
+    `  ${color.command("setup")}            Initialize, install, and activate SkillHub skills`,
     `  ${color.command("use -u <user>")}     Activate a user profile`,
     `  ${color.command("skillhub login")}    Save SkillHub credentials`,
     `  ${color.command("skill list")}        List remote SkillHub skills`,
@@ -110,9 +110,10 @@ export function formatRootHelp(options: OutputOptions = {}): string {
   ].join("\n");
 }
 
-function formatMessage(message: string, color: CliColor): string {
-  const tone = classifyMessage(message);
-  return `${color.symbol(symbolForTone(tone), tone)} ${color.message(message, tone)}`;
+function formatMessage(message: CommandMessage, color: CliColor): string {
+  const text = typeof message === "string" ? message : message.text;
+  const tone = typeof message === "string" ? classifyMessage(message) : message.tone ?? "success";
+  return `${color.symbol(symbolForTone(tone), tone)} ${color.message(text, tone)}`;
 }
 
 function formatKeyValue(key: string, value: string, color: CliColor): string {

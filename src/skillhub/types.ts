@@ -138,6 +138,7 @@ export interface SkillHubErrorDetails {
   status?: number;
   registry?: string;
   detail?: string;
+  cause?: unknown;
 }
 
 export class SkillHubError extends Error {
@@ -146,7 +147,7 @@ export class SkillHubError extends Error {
   readonly detail?: string;
 
   constructor(message: string, details: SkillHubErrorDetails = {}) {
-    super(message);
+    super(message, { cause: details.cause });
     this.name = "SkillHubError";
     this.status = details.status;
     this.registry = details.registry;

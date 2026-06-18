@@ -75,7 +75,7 @@ describe("built CLI", () => {
     });
   });
 
-  test("installs Claude local profile plugin from the built CLI", async () => {
+  test("does not install the deprecated Claude local profile plugin from the built CLI", async () => {
     const root = await makeTempRoot();
     const claudeConfig = await makeTempRoot();
     const cliPath = resolve("dist/cli/index.js");
@@ -85,10 +85,10 @@ describe("built CLI", () => {
     await execFileAsync(process.execPath, [cliPath, "use", "-u", "yanan.zhao"], { cwd: root, env });
 
     await expect(execFileAsync("claude", ["plugin", "list", "--json"], { cwd: root, env })).resolves.toMatchObject({
-      stdout: expect.stringContaining("ticiou-yanan-zhao@ticiou-local-profiles"),
+      stdout: "[]\n",
     });
     await expect(execFileAsync(process.execPath, [cliPath, "doctor"], { cwd: root, env })).resolves.toMatchObject({
-      stdout: expect.stringContaining("Claude local profile plugin installed and enabled"),
+      stdout: expect.not.stringContaining("Claude local profile plugin"),
     });
   });
 });

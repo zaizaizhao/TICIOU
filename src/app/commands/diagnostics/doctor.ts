@@ -4,18 +4,10 @@ import { PLATFORMS } from "../../../domain/types.js";
 import type { Platform } from "../../../domain/types.js";
 import { joinRelative, pathExists, readTextFileIfExists } from "../../../infra/fs.js";
 import { readManifest } from "../../../infra/manifest.js";
-import { resolveRuntimeProfilesDirectory } from "../../../infra/profile-paths.js";
 import { getPythonCommand } from "../../../infra/python-command.js";
 import { describePlatform, platformResourceRoot, platformSkillRoot } from "../../../platforms/registry.js";
 import { readConfig } from "../../../project/config.js";
 import { TICIOU_DIR } from "../../../project/paths.js";
-import {
-  CLAUDE_LOCAL_PLUGIN_MARKETPLACE_ROOT,
-  CLAUDE_LOCAL_PROFILE_MARKETPLACE,
-  getClaudeLocalProfilePluginStatus,
-  localProfilePluginId,
-} from "../../../rendering/claude-local-plugin.js";
-import { userPluginName } from "../../../domain/resource-names.js";
 import { getStatus } from "./status.js";
 import type { CommandOptions, DoctorResult } from "../types.js";
 
@@ -55,26 +47,12 @@ export async function doctorProject(options: CommandOptions): Promise<DoctorResu
 
     ok = (await checkPlatformDirectories(status.targetRoot, platform, messages)) && ok;
     ok = (await checkPlatformHooks(status.targetRoot, platform, messages)) && ok;
-    if (platform === "claude") {
-      ok =
-        (await checkClaudeLocalProfilePlugin(
-          status.targetRoot,
-          status.currentProfile,
-          config,
-          messages,
-          options.runner,
-        )) && ok;
-    }
   }
 
   if (status.currentProfile === undefined) {
-    messages.push("No active profile. Run ticiou use -u <user>.");
+    messages.push("No active profile. Run ticiou setup.");
   } else {
     messages.push(`Active profile: ${status.currentProfile}`);
-    if (!(await pathExists(join(resolveRuntimeProfilesDirectory(), "users", status.currentProfile)))) {
-      ok = false;
-      messages.push(`Active profile ${status.currentProfile} was not found in packaged Ticiou profiles`);
-    }
   }
 
   ok = (await checkManifestFiles(status.targetRoot, messages)) && ok;
@@ -88,91 +66,6 @@ export async function doctorProject(options: CommandOptions): Promise<DoctorResu
     ok,
     messages,
   };
-}
-
-async function checkClaudeLocalProfilePlugin(
-  targetRoot: string,
-  currentProfile: string | undefined,
-  config: NonNullable<Awaited<ReturnType<typeof readConfig>>>,
-  messages: string[],
-  runner: CommandOptions["runner"],
-): Promise<boolean> {
-  const settingsContent = await readTextFileIfExists(join(targetRoot, ".claude", "settings.local.json"));
-  const marketplaceRoot = joinRelative(targetRoot, CLAUDE_LOCAL_PLUGIN_MARKETPLACE_ROOT);
-
-  if (currentProfile === undefined) {
-    if (settingsContent !== undefined || (await pathExists(marketplaceRoot))) {
-      messages.push("Claude local profile plugin remains configured without an active profile");
-      return false;
-    }
-    return true;
-  }
-
-  if (settingsContent === undefined) {
-    messages.push("Missing Claude local profile plugin settings: .claude/settings.local.json");
-    return false;
-  }
-
-  let settings: Record<string, unknown>;
-  try {
-    const parsed = JSON.parse(settingsContent) as unknown;
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      throw new Error("not an object");
-    }
-    settings = parsed as Record<string, unknown>;
-  } catch {
-    messages.push("Claude local profile plugin settings are not valid JSON: .claude/settings.local.json");
-    return false;
-  }
-
-  const pluginName = userPluginName({ prefix: config.render.prefix, user: currentProfile });
-  const pluginId = localProfilePluginId(config, currentProfile);
-  const enabledPlugins = asRecord(settings.enabledPlugins);
-  const extraKnownMarketplaces = asRecord(settings.extraKnownMarketplaces);
-  const marketplace = asRecord(extraKnownMarketplaces?.[CLAUDE_LOCAL_PROFILE_MARKETPLACE]);
-  const source = asRecord(marketplace?.source);
-  let ok = true;
-
-  if (enabledPlugins?.[pluginId] !== true) {
-    ok = false;
-    messages.push(`Claude local profile plugin is not enabled: ${pluginId}`);
-  }
-
-  if (source?.source !== "directory" || source.path !== marketplaceRoot) {
-    ok = false;
-    messages.push(`Claude local profile marketplace path is not current target: ${CLAUDE_LOCAL_PROFILE_MARKETPLACE}`);
-  }
-
-  for (const path of [
-    join(marketplaceRoot, ".claude-plugin", "marketplace.json"),
-    join(marketplaceRoot, "plugins", pluginName, ".claude-plugin", "plugin.json"),
-    join(marketplaceRoot, "plugins", pluginName, "skills"),
-  ]) {
-    if (!(await pathExists(path))) {
-      ok = false;
-      messages.push(`Missing Claude local profile plugin file: ${path}`);
-    }
-  }
-
-  try {
-    const pluginStatus = await getClaudeLocalProfilePluginStatus(targetRoot, pluginId, runner);
-    if (!pluginStatus.installed) {
-      ok = false;
-      messages.push(`Claude local profile plugin is not installed: ${pluginId}`);
-    } else if (!pluginStatus.enabled) {
-      ok = false;
-      messages.push(`Claude local profile plugin is installed but disabled: ${pluginId}`);
-    }
-  } catch (error) {
-    ok = false;
-    const message = error instanceof Error ? error.message : String(error);
-    messages.push(`Unable to inspect Claude local profile plugin installation: ${message}`);
-  }
-
-  if (ok) {
-    messages.push("Claude local profile plugin installed and enabled");
-  }
-  return ok;
 }
 
 async function checkPlatformDirectories(targetRoot: string, platform: Platform, messages: string[]): Promise<boolean> {
@@ -303,11 +196,4 @@ async function checkManifestFiles(targetRoot: string, messages: string[]): Promi
     messages.push("Manifest files verified");
   }
   return ok;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return undefined;
-  }
-  return value as Record<string, unknown>;
 }

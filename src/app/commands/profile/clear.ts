@@ -3,30 +3,20 @@ import { join } from "node:path";
 
 import { clearManagedFiles } from "../../../infra/manifest.js";
 import { resolveTargetRoot } from "../../../infra/target-root.js";
-import { getEnabledPlatforms, readConfig } from "../../../project/config.js";
-import { CURRENT_PROFILE_PATH } from "../../../project/paths.js";
-import {
-  syncClaudeLocalProfilePluginSettings,
-  uninstallClaudeLocalProfilePlugin,
-} from "../../../rendering/claude-local-plugin.js";
+import { CURRENT_PROFILE_PATH, SKILLHUB_LEGACY_LOCK_PATH, SKILLHUB_LOCKS_DIR } from "../../../project/paths.js";
 import type { ClearResourcesOptions, CommandResult } from "../types.js";
 
 export async function clearResources(options: ClearResourcesOptions): Promise<CommandResult> {
   const targetRoot = await resolveTargetRoot({ cwd: options.cwd, mode: options.target });
-  const config = await readConfig(targetRoot);
   const manifest = await clearManagedFiles(
     targetRoot,
     (entry) => options.scope === "all" || entry.source === "profile" || entry.source === "skillhub",
   );
-  if (config !== undefined && getEnabledPlatforms(config).includes("claude")) {
-    await uninstallClaudeLocalProfilePlugin({
-      targetRoot,
-      config,
-      runner: options.runner,
-    });
-    await syncClaudeLocalProfilePluginSettings(targetRoot, undefined, config);
-  }
   await rm(join(targetRoot, CURRENT_PROFILE_PATH), { force: true });
+  if (options.scope === "all") {
+    await rm(join(targetRoot, SKILLHUB_LOCKS_DIR), { recursive: true, force: true });
+    await rm(join(targetRoot, SKILLHUB_LEGACY_LOCK_PATH), { force: true });
+  }
 
   return {
     targetRoot,

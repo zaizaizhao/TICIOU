@@ -88,8 +88,8 @@ export class SkillHubClient {
       return await this.fetchImpl(`${this.registry}/api/cli/v1${path}`, {
         headers: this.headers(),
       });
-    } catch {
-      throw new SkillHubError("SkillHub registry unreachable.", { registry: this.registry });
+    } catch (error) {
+      throw new SkillHubError("SkillHub registry unreachable.", { registry: this.registry, cause: error });
     }
   }
 
@@ -133,8 +133,8 @@ export class SkillHubClient {
       redirected = await this.fetchImpl(redirectUrl, {
         headers: redirectOrigin === registryOrigin ? this.headers() : {},
       });
-    } catch {
-      throw new SkillHubError("SkillHub download redirect unreachable.", { registry: this.registry });
+    } catch (error) {
+      throw new SkillHubError("SkillHub download redirect unreachable.", { registry: this.registry, cause: error });
     }
 
     if (!redirected.ok) {

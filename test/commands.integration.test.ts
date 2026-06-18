@@ -3,9 +3,11 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { strToU8, zipSync } from "fflate";
 import { afterEach, describe, expect, test } from "vitest";
 
 import {
+  addSkill,
   clearResources,
   doctorProject,
   getStatus,
@@ -16,6 +18,8 @@ import {
 } from "../src/app/commands/index.js";
 import type { CommandRunResult, CommandRunner } from "../src/infra/command-runner.js";
 import { getPowershellPythonCommand, getPythonCommand } from "../src/infra/python-command.js";
+import { ensureConfig, writeConfig } from "../src/project/config.js";
+import { writeSkillHubLock } from "../src/skillhub/lock.js";
 
 const tempRoots: string[] = [];
 
@@ -80,6 +84,13 @@ function createFakeClaudeRunner(): { runner: CommandRunner; calls: Array<{ file:
   return { runner, calls };
 }
 
+function jsonResponse(data: unknown, status = 200): Response {
+  return new Response(JSON.stringify({ data }), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
 afterEach(async () => {
   await Promise.all(tempRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -97,7 +108,7 @@ describe("Ticiou command workflow", () => {
     expect(existsSync(join(root, ".ticiou/templates"))).toBe(false);
   });
 
-  test("sets up a new project platform and profile in one command", async () => {
+  test("sets up a new project platform and profile in one command without local user skills", async () => {
     const root = await makeTempRoot();
 
     const result = await setupProject({
@@ -115,10 +126,174 @@ describe("Ticiou command workflow", () => {
     expect(status.currentProfile).toBe("kaibin.xu");
     expect(status.enabledPlatforms).toEqual(["copilot"]);
     await expect(readFile(join(root, ".ticiou/.runtime/current-profile"), "utf8")).resolves.toBe("kaibin.xu\n");
-    await expect(
-      readFile(join(root, ".github/skills/ticiou-user-kaibin-xu-personal/SKILL.md"), "utf8"),
-    ).resolves.toContain("name: ticiou-user-kaibin-xu-personal");
+    expect(existsSync(join(root, ".github/skills/ticiou-user-kaibin-xu-personal/SKILL.md"))).toBe(false);
     expect(existsSync(join(root, ".github/copilot-instructions.md"))).toBe(true);
+  });
+
+  test("sets up a new project from SkillHub token and selected remote skills", async () => {
+    const root = await makeTempRoot();
+    const zip = zipSync({
+      "SKILL.md": strToU8("# Code Review\n"),
+    });
+    const fetchCalls: Array<{ url: string; authorization: string | null }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      fetchCalls.push({ url, authorization: new Headers(init?.headers).get("authorization") });
+
+      if (url.endsWith("/api/cli/v1/auth/whoami")) {
+        return jsonResponse({ handle: "yanan.zhao", displayName: "Yanan Zhao" });
+      }
+      if (url.includes("/api/cli/v1/skills/discover?")) {
+        return jsonResponse({
+          items: [
+            {
+              namespace: "global",
+              slug: "code-review",
+              displayName: "Code Review",
+              summary: "Review pull requests",
+              publishedVersion: "1.0.0",
+            },
+            {
+              namespace: "global",
+              slug: "security-check",
+              displayName: "Security Check",
+              summary: "Review security risks",
+              publishedVersion: "1.0.0",
+            },
+          ],
+          total: 2,
+          page: 0,
+          size: 100,
+        });
+      }
+      if (url.endsWith("/api/cli/v1/skills/global/code-review/resolve")) {
+        return jsonResponse({
+          namespace: "global",
+          slug: "code-review",
+          version: "1.0.0",
+          versionId: 10,
+          fingerprint: "sha256:code",
+          downloadUrl: "/download",
+        });
+      }
+      if (url.endsWith("/api/cli/v1/skills/global/code-review/versions/1.0.0/download")) {
+        return new Response(zip.buffer as ArrayBuffer);
+      }
+      return jsonResponse({ message: "not found" }, 404);
+    };
+
+    try {
+      const result = await setupProject({
+        cwd: root,
+        platforms: ["claude"],
+        token: "secret-token",
+        skillSelector: async ({ items }) => [items[0]],
+      });
+      const status = await getStatus({ cwd: root });
+      const config = await readFile(join(root, ".ticiou/config.yaml"), "utf8");
+
+      expect(result.messages).toContain("Authenticated SkillHub user yanan.zhao");
+      expect(result.messages).toContain("Selected 1 SkillHub skill");
+      expect(result.messages).toContain("Installed SkillHub skill global/code-review@1.0.0");
+      expect(result.messages).toContain("Activated Ticiou profile yanan.zhao");
+      expect(status.currentProfile).toBe("yanan.zhao");
+      expect(config).toContain("default_user: yanan.zhao");
+      expect(config).toContain("slug: code-review");
+      await expect(readFile(join(root, ".claude/skills/skillhub-global-code-review/SKILL.md"), "utf8")).resolves.toContain(
+        "name: skillhub-global-code-review",
+      );
+      expect(existsSync(join(root, ".ticiou/.runtime/claude-plugin-marketplace"))).toBe(false);
+      expect(existsSync(join(root, ".claude/settings.local.json"))).toBe(false);
+      expect(fetchCalls.map((call) => call.authorization)).toContain("Bearer secret-token");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("renders binary assets from SkillHub packages without corrupting bytes", async () => {
+    const root = await makeTempRoot();
+    const logoBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0x80, 0x41]);
+    const zip = zipSync({
+      "SKILL.md": strToU8("# Code Review\n"),
+      "assets/logo.png": logoBytes,
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith("/api/cli/v1/auth/whoami")) {
+        return jsonResponse({ handle: "yanan.zhao", displayName: "Yanan Zhao" });
+      }
+      if (url.includes("/api/cli/v1/skills/discover?")) {
+        return jsonResponse({
+          items: [{ namespace: "global", slug: "code-review", publishedVersion: "1.0.0" }],
+          total: 1,
+          page: 0,
+          size: 100,
+        });
+      }
+      if (url.endsWith("/api/cli/v1/skills/global/code-review/resolve")) {
+        return jsonResponse({
+          namespace: "global",
+          slug: "code-review",
+          version: "1.0.0",
+          versionId: 10,
+          fingerprint: "sha256:code",
+          downloadUrl: "/download",
+        });
+      }
+      if (url.endsWith("/api/cli/v1/skills/global/code-review/versions/1.0.0/download")) {
+        return new Response(zip.buffer as ArrayBuffer);
+      }
+      return jsonResponse({ message: "not found" }, 404);
+    };
+
+    try {
+      await setupProject({
+        cwd: root,
+        platforms: ["claude"],
+        token: "secret-token",
+        skillSelector: async ({ items }) => [items[0]],
+      });
+
+      await expect(readFile(join(root, ".claude/skills/skillhub-global-code-review/assets/logo.png"))).resolves.toEqual(
+        Buffer.from(logoBytes),
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("requires explicit selection for non-interactive SkillHub setup", async () => {
+    const root = await makeTempRoot();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith("/api/cli/v1/auth/whoami")) {
+        return jsonResponse({ handle: "yanan.zhao", displayName: "Yanan Zhao" });
+      }
+      if (url.includes("/api/cli/v1/skills/discover?")) {
+        return jsonResponse({
+          items: [{ namespace: "global", slug: "code-review", publishedVersion: "1.0.0" }],
+          total: 1,
+          page: 0,
+          size: 100,
+        });
+      }
+      return jsonResponse({ message: "not found" }, 404);
+    };
+
+    try {
+      await expect(
+        setupProject({
+          cwd: root,
+          platforms: ["claude"],
+          token: "secret-token",
+        }),
+      ).rejects.toThrow("SkillHub setup requires skill selection");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   test("sets up multiple platforms in one command", async () => {
@@ -140,12 +315,12 @@ describe("Ticiou command workflow", () => {
       "Activated Ticiou profile kaibin.xu",
     ]);
     expect(status.enabledPlatforms).toEqual(["claude", "copilot"]);
-    expect(calls.some((call) => call.args[0] === "plugin" && call.args[1] === "install")).toBe(true);
+    expect(calls.some((call) => call.args[0] === "plugin")).toBe(false);
     expect(existsSync(join(root, ".claude/settings.json"))).toBe(true);
     expect(existsSync(join(root, ".github/copilot-instructions.md"))).toBe(true);
   });
 
-  test("installs Claude and Copilot adapters and renders package shared plus active user skills", async () => {
+  test("installs Claude and Copilot adapters and renders packaged non-skill resources", async () => {
     const root = await makeTempRoot();
     const { runner, calls } = createFakeClaudeRunner();
 
@@ -186,44 +361,18 @@ describe("Ticiou command workflow", () => {
       "name: ticiou-shared-azure-devops",
     );
     expect(existsSync(join(root, ".claude/skills/ticiou-user-kaibin-xu-personal/SKILL.md"))).toBe(false);
-    await expect(
-      readFile(
-        join(
-          root,
-          ".ticiou/.runtime/claude-plugin-marketplace/plugins/ticiou-kaibin-xu/skills/personal/SKILL.md",
-        ),
-        "utf8",
-      ),
-    ).resolves.toContain("name: personal");
-    await expect(
-      readFile(join(root, ".ticiou/.runtime/claude-plugin-marketplace/.claude-plugin/marketplace.json"), "utf8"),
-    ).resolves.toContain("ticiou-kaibin-xu");
-    const localSettings = JSON.parse(await readFile(join(root, ".claude/settings.local.json"), "utf8")) as {
-      enabledPlugins: Record<string, boolean>;
-      extraKnownMarketplaces: Record<string, { source: { source: string; path: string } }>;
-    };
-    expect(localSettings.enabledPlugins["ticiou-kaibin-xu@ticiou-local-profiles"]).toBe(true);
-    expect(localSettings.extraKnownMarketplaces["ticiou-local-profiles"]?.source).toEqual({
-      source: "directory",
-      path: join(root, ".ticiou/.runtime/claude-plugin-marketplace"),
-    });
-    expect(calls.map((call) => call.args.join(" "))).toContain(
-      `plugin marketplace add ${join(root, ".ticiou/.runtime/claude-plugin-marketplace")} --scope local`,
-    );
-    expect(calls.map((call) => call.args.join(" "))).toContain(
-      "plugin install ticiou-kaibin-xu@ticiou-local-profiles --scope local",
-    );
+    expect(existsSync(join(root, ".ticiou/.runtime/claude-plugin-marketplace"))).toBe(false);
+    expect(existsSync(join(root, ".claude/settings.local.json"))).toBe(false);
+    expect(calls.some((call) => call.args[0] === "plugin")).toBe(false);
     await expect(readFile(join(root, ".github/skills/ticiou-shared-azure-devops/SKILL.md"), "utf8")).resolves.toContain(
       "# Azure DevOps Workflow",
     );
-    await expect(
-      readFile(join(root, ".github/skills/ticiou-user-kaibin-xu-personal/SKILL.md"), "utf8"),
-    ).resolves.toContain("name: ticiou-user-kaibin-xu-personal");
+    expect(existsSync(join(root, ".github/skills/ticiou-user-kaibin-xu-personal/SKILL.md"))).toBe(false);
     await expect(readFile(join(root, ".ticiou/.runtime/current-profile"), "utf8")).resolves.toBe("kaibin.xu\n");
     expect(existsSync(join(root, ".ticiou/profiles/kaibin.xu/profile.yaml"))).toBe(false);
   });
 
-  test("switches the active user without leaving previous user resources or plugins active", async () => {
+  test("switches the active user without leaving previous user resources active", async () => {
     const root = await makeTempRoot();
     const { runner, calls } = createFakeClaudeRunner();
 
@@ -250,20 +399,429 @@ describe("Ticiou command workflow", () => {
       existsSync(
         join(root, ".ticiou/.runtime/claude-plugin-marketplace/plugins/ticiou-yanan-zhao/skills/personal/SKILL.md"),
       ),
-    ).toBe(true);
-    const localSettings = JSON.parse(await readFile(join(root, ".claude/settings.local.json"), "utf8")) as {
-      enabledPlugins: Record<string, boolean>;
-    };
-    expect(localSettings.enabledPlugins).toEqual({
-      "ticiou-yanan-zhao@ticiou-local-profiles": true,
-    });
+    ).toBe(false);
+    expect(existsSync(join(root, ".claude/settings.local.json"))).toBe(false);
     const pluginList = JSON.parse((await runner("claude", ["plugin", "list", "--json"], { cwd: root })).stdout) as Array<{
       id: string;
     }>;
-    expect(pluginList.map((plugin) => plugin.id)).toEqual(["ticiou-yanan-zhao@ticiou-local-profiles"]);
-    expect(calls.map((call) => call.args.join(" "))).toContain(
-      "plugin uninstall ticiou-kaibin-xu@ticiou-local-profiles --scope local",
-    );
+    expect(pluginList.map((plugin) => plugin.id)).toEqual([]);
+    expect(calls.some((call) => call.args[0] === "plugin" && call.args[1] !== "list")).toBe(false);
+  });
+
+  test("switches users when both profiles have SkillHub selections", async () => {
+    const root = await makeTempRoot();
+    const { runner } = createFakeClaudeRunner();
+    const zipBySlug = new Map([
+      ["kaibin-skill", zipSync({ "SKILL.md": strToU8("# Kaibin Skill\n") }).buffer as ArrayBuffer],
+      ["yanan-skill", zipSync({ "SKILL.md": strToU8("# Yanan Skill\n") }).buffer as ArrayBuffer],
+    ]);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith("/api/cli/v1/auth/whoami")) {
+        return jsonResponse({ handle: "token.user", displayName: "Token User" });
+      }
+      for (const slug of zipBySlug.keys()) {
+        if (url.endsWith(`/api/cli/v1/skills/global/${slug}/resolve`)) {
+          return jsonResponse({
+            namespace: "global",
+            slug,
+            version: "1.0.0",
+            versionId: slug === "kaibin-skill" ? 10 : 20,
+            fingerprint: `sha256:${slug}`,
+            downloadUrl: "/download",
+          });
+        }
+        if (url.endsWith(`/api/cli/v1/skills/global/${slug}/versions/1.0.0/download`)) {
+          return new Response(zipBySlug.get(slug));
+        }
+      }
+      return jsonResponse({ message: "not found" }, 404);
+    };
+
+    try {
+      await initProject({ cwd: root });
+      await installPlatform({ cwd: root, platform: "claude" });
+      const config = await ensureConfig(root);
+      config.profiles.users["kaibin.xu"] = {
+        skillhub: {
+          registry: "http://localhost:3000",
+          autoRefresh: false,
+          backgroundCheck: true,
+          updatePolicy: "prompt",
+          newSkillPolicy: "prompt",
+          deletedSkillPolicy: "keep-cache",
+          selections: [{ namespace: "global", slug: "kaibin-skill", policy: "auto" }],
+        },
+      };
+      config.profiles.users["yanan.zhao"] = {
+        skillhub: {
+          registry: "http://localhost:3000",
+          autoRefresh: false,
+          backgroundCheck: true,
+          updatePolicy: "prompt",
+          newSkillPolicy: "prompt",
+          deletedSkillPolicy: "keep-cache",
+          selections: [{ namespace: "global", slug: "yanan-skill", policy: "auto" }],
+        },
+      };
+      await writeConfig(root, config);
+
+      await useProfile({ cwd: root, user: "kaibin.xu", runner, token: "secret-token" });
+      await useProfile({ cwd: root, user: "yanan.zhao", runner, token: "secret-token" });
+
+      expect(existsSync(join(root, ".claude/skills/skillhub-global-kaibin-skill/SKILL.md"))).toBe(false);
+      await expect(readFile(join(root, ".claude/skills/skillhub-global-yanan-skill/SKILL.md"), "utf8")).resolves.toContain(
+        "name: skillhub-global-yanan-skill",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("adds selector selections and renders discovered SkillHub skills", async () => {
+    const root = await makeTempRoot();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith("/api/cli/v1/auth/whoami")) {
+        return jsonResponse({ handle: "yanan.zhao", displayName: "Yanan Zhao" });
+      }
+      if (url.includes("/api/cli/v1/skills/discover?")) {
+        expect(url).toContain("namespace=emrois");
+        expect(url).toContain("owner=self");
+        expect(url).toContain("label=active");
+        return jsonResponse({
+          items: [
+            { namespace: "emrois", slug: "api-review", publishedVersion: "1.0.0" },
+            { namespace: "emrois", slug: "security-review", publishedVersion: "1.1.0" },
+          ],
+          total: 2,
+          page: 0,
+          size: 100,
+        });
+      }
+      if (url.endsWith("/api/cli/v1/skills/emrois/api-review/resolve?version=1.0.0")) {
+        return jsonResponse({
+          namespace: "emrois",
+          slug: "api-review",
+          version: "1.0.0",
+          versionId: 10,
+          fingerprint: "sha256:api-review",
+          downloadUrl: "/download",
+        });
+      }
+      if (url.endsWith("/api/cli/v1/skills/emrois/security-review/resolve?version=1.1.0")) {
+        return jsonResponse({
+          namespace: "emrois",
+          slug: "security-review",
+          version: "1.1.0",
+          versionId: 11,
+          fingerprint: "sha256:security-review",
+          downloadUrl: "/download",
+        });
+      }
+      if (url.endsWith("/api/cli/v1/skills/emrois/api-review/versions/1.0.0/download")) {
+        return new Response(zipSync({ "SKILL.md": strToU8("# API Review\n") }).buffer as ArrayBuffer);
+      }
+      if (url.endsWith("/api/cli/v1/skills/emrois/security-review/versions/1.1.0/download")) {
+        return new Response(zipSync({ "SKILL.md": strToU8("# Security Review\n") }).buffer as ArrayBuffer);
+      }
+      return jsonResponse({ message: "not found" }, 404);
+    };
+
+    try {
+      await initProject({ cwd: root });
+      await installPlatform({ cwd: root, platform: "claude" });
+      const config = await ensureConfig(root);
+      config.profiles.defaultUser = "yanan.zhao";
+      await writeConfig(root, config);
+
+      const result = await addSkill({
+        cwd: root,
+        namespace: "emrois",
+        owner: "self",
+        label: "active",
+        token: "secret-token",
+      });
+
+      expect(result.messages).toContain("Added SkillHub selection for profile yanan.zhao");
+      expect(result.messages).toContain("Installed SkillHub skill emrois/api-review@1.0.0");
+      expect(result.messages).toContain("Installed SkillHub skill emrois/security-review@1.1.0");
+      await expect(readFile(join(root, ".claude/skills/skillhub-emrois-api-review/SKILL.md"), "utf8")).resolves.toContain(
+        "name: skillhub-emrois-api-review",
+      );
+      await expect(
+        readFile(join(root, ".claude/skills/skillhub-emrois-security-review/SKILL.md"), "utf8"),
+      ).resolves.toContain("name: skillhub-emrois-security-review");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("removes rendered SkillHub files when a selected skill becomes forbidden", async () => {
+    const root = await makeTempRoot();
+    let remoteStatus: "ok" | "forbidden" = "ok";
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith("/api/cli/v1/auth/whoami")) {
+        return jsonResponse({ handle: "yanan.zhao", displayName: "Yanan Zhao" });
+      }
+      if (url.endsWith("/api/cli/v1/skills/global/code-review/resolve")) {
+        if (remoteStatus === "forbidden") {
+          return jsonResponse({ message: "forbidden" }, 403);
+        }
+        return jsonResponse({
+          namespace: "global",
+          slug: "code-review",
+          version: "1.0.0",
+          versionId: 10,
+          fingerprint: "sha256:code-review",
+          downloadUrl: "/download",
+        });
+      }
+      if (url.endsWith("/api/cli/v1/skills/global/code-review/versions/1.0.0/download")) {
+        return new Response(zipSync({ "SKILL.md": strToU8("# Code Review\n") }).buffer as ArrayBuffer);
+      }
+      return jsonResponse({ message: "not found" }, 404);
+    };
+
+    try {
+      await initProject({ cwd: root });
+      await installPlatform({ cwd: root, platform: "claude" });
+      const config = await ensureConfig(root);
+      config.profiles.users["yanan.zhao"] = {
+        skillhub: {
+          registry: "http://localhost:3000",
+          autoRefresh: true,
+          backgroundCheck: true,
+          updatePolicy: "prompt",
+          newSkillPolicy: "prompt",
+          deletedSkillPolicy: "keep-cache",
+          selections: [{ namespace: "global", slug: "code-review", policy: "auto" }],
+        },
+      };
+      await writeConfig(root, config);
+
+      await useProfile({ cwd: root, user: "yanan.zhao", token: "secret-token" });
+      expect(existsSync(join(root, ".claude/skills/skillhub-global-code-review/SKILL.md"))).toBe(true);
+
+      remoteStatus = "forbidden";
+      await useProfile({ cwd: root, user: "yanan.zhao", token: "secret-token" });
+
+      expect(existsSync(join(root, ".claude/skills/skillhub-global-code-review/SKILL.md"))).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("removes rendered SkillHub files when a selected skill is missing from the registry", async () => {
+    const root = await makeTempRoot();
+    let remoteStatus: "ok" | "missing" = "ok";
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith("/api/cli/v1/auth/whoami")) {
+        return jsonResponse({ handle: "yanan.zhao", displayName: "Yanan Zhao" });
+      }
+      if (url.endsWith("/api/cli/v1/skills/global/code-review/resolve")) {
+        if (remoteStatus === "missing") {
+          return jsonResponse({ message: "not found" }, 404);
+        }
+        return jsonResponse({
+          namespace: "global",
+          slug: "code-review",
+          version: "1.0.0",
+          versionId: 10,
+          fingerprint: "sha256:code-review",
+          downloadUrl: "/download",
+        });
+      }
+      if (url.endsWith("/api/cli/v1/skills/global/code-review/versions/1.0.0/download")) {
+        return new Response(zipSync({ "SKILL.md": strToU8("# Code Review\n") }).buffer as ArrayBuffer);
+      }
+      return jsonResponse({ message: "not found" }, 404);
+    };
+
+    try {
+      await initProject({ cwd: root });
+      await installPlatform({ cwd: root, platform: "claude" });
+      const config = await ensureConfig(root);
+      config.profiles.users["yanan.zhao"] = {
+        skillhub: {
+          registry: "http://localhost:3000",
+          autoRefresh: true,
+          backgroundCheck: true,
+          updatePolicy: "prompt",
+          newSkillPolicy: "prompt",
+          deletedSkillPolicy: "keep-cache",
+          selections: [{ namespace: "global", slug: "code-review", policy: "auto" }],
+        },
+      };
+      await writeConfig(root, config);
+
+      await useProfile({ cwd: root, user: "yanan.zhao", token: "secret-token" });
+      expect(existsSync(join(root, ".claude/skills/skillhub-global-code-review/SKILL.md"))).toBe(true);
+
+      remoteStatus = "missing";
+      await useProfile({ cwd: root, user: "yanan.zhao", token: "secret-token" });
+
+      expect(existsSync(join(root, ".claude/skills/skillhub-global-code-review/SKILL.md"))).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("continues rendering when SkillHub whoami soft validation fails", async () => {
+    const root = await makeTempRoot();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith("/api/cli/v1/auth/whoami")) {
+        return jsonResponse({ message: "unauthorized" }, 401);
+      }
+      if (url.endsWith("/api/cli/v1/skills/global/code-review/resolve")) {
+        return jsonResponse({
+          namespace: "global",
+          slug: "code-review",
+          version: "1.0.0",
+          versionId: 10,
+          fingerprint: "sha256:code-review",
+          downloadUrl: "/download",
+        });
+      }
+      if (url.endsWith("/api/cli/v1/skills/global/code-review/versions/1.0.0/download")) {
+        return new Response(zipSync({ "SKILL.md": strToU8("# Code Review\n") }).buffer as ArrayBuffer);
+      }
+      return jsonResponse({ message: "not found" }, 404);
+    };
+
+    try {
+      await initProject({ cwd: root });
+      await installPlatform({ cwd: root, platform: "claude" });
+      const config = await ensureConfig(root);
+      config.profiles.users["yanan.zhao"] = {
+        skillhub: {
+          registry: "http://localhost:3000",
+          autoRefresh: false,
+          backgroundCheck: true,
+          updatePolicy: "prompt",
+          newSkillPolicy: "prompt",
+          deletedSkillPolicy: "keep-cache",
+          selections: [{ namespace: "global", slug: "code-review", policy: "auto" }],
+        },
+      };
+      await writeConfig(root, config);
+
+      const result = await useProfile({ cwd: root, user: "yanan.zhao", token: "expired-token" });
+
+      expect(result.messages).toContainEqual({
+        text: "SkillHub whoami check failed: SkillHub authentication failed.",
+        tone: "warning",
+      });
+      await expect(readFile(join(root, ".claude/skills/skillhub-global-code-review/SKILL.md"), "utf8")).resolves.toContain(
+        "name: skillhub-global-code-review",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("uses locked cache when SkillHub registry is unreachable", async () => {
+    const root = await makeTempRoot();
+    let online = true;
+    const renderedSkillPath = join(root, ".claude/skills/skillhub-global-code-review/SKILL.md");
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input) => {
+      if (!online) {
+        throw new TypeError("fetch failed");
+      }
+      const url = String(input);
+      if (url.endsWith("/api/cli/v1/auth/whoami")) {
+        return jsonResponse({ handle: "yanan.zhao", displayName: "Yanan Zhao" });
+      }
+      if (url.endsWith("/api/cli/v1/skills/global/code-review/resolve")) {
+        return jsonResponse({
+          namespace: "global",
+          slug: "code-review",
+          version: "1.0.0",
+          versionId: 10,
+          fingerprint: "sha256:code-review",
+          downloadUrl: "/download",
+        });
+      }
+      if (url.endsWith("/api/cli/v1/skills/global/code-review/versions/1.0.0/download")) {
+        return new Response(zipSync({ "SKILL.md": strToU8("# Code Review\n") }).buffer as ArrayBuffer);
+      }
+      return jsonResponse({ message: "not found" }, 404);
+    };
+
+    try {
+      await initProject({ cwd: root });
+      await installPlatform({ cwd: root, platform: "claude" });
+      const config = await ensureConfig(root);
+      config.profiles.users["yanan.zhao"] = {
+        skillhub: {
+          registry: "http://localhost:3000",
+          autoRefresh: true,
+          backgroundCheck: true,
+          updatePolicy: "prompt",
+          newSkillPolicy: "prompt",
+          deletedSkillPolicy: "keep-cache",
+          selections: [{ namespace: "global", slug: "code-review", policy: "auto" }],
+        },
+      };
+      await writeConfig(root, config);
+
+      await useProfile({ cwd: root, user: "yanan.zhao", token: "secret-token" });
+      expect(existsSync(renderedSkillPath)).toBe(true);
+      await rm(renderedSkillPath, { force: true });
+      expect(existsSync(renderedSkillPath)).toBe(false);
+
+      online = false;
+      const result = await useProfile({ cwd: root, user: "yanan.zhao", token: "secret-token" });
+
+      expect(result.messages).toContainEqual({
+        text: "SkillHub registry unreachable; using cached global/code-review@1.0.0",
+        tone: "warning",
+      });
+      await expect(readFile(renderedSkillPath, "utf8")).resolves.toContain("name: skillhub-global-code-review");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("fails when SkillHub registry is unreachable without a locked cache", async () => {
+    const root = await makeTempRoot();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      throw new TypeError("fetch failed");
+    };
+
+    try {
+      await initProject({ cwd: root });
+      await installPlatform({ cwd: root, platform: "claude" });
+      const config = await ensureConfig(root);
+      config.profiles.users["yanan.zhao"] = {
+        skillhub: {
+          registry: "http://localhost:3000",
+          autoRefresh: true,
+          backgroundCheck: true,
+          updatePolicy: "prompt",
+          newSkillPolicy: "prompt",
+          deletedSkillPolicy: "keep-cache",
+          selections: [{ namespace: "global", slug: "code-review", policy: "auto" }],
+        },
+      };
+      await writeConfig(root, config);
+
+      await expect(useProfile({ cwd: root, user: "yanan.zhao", token: "secret-token" })).rejects.toThrow(
+        "SkillHub registry unreachable.",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   test("clears active user resources while keeping shared resources rendered", async () => {
@@ -290,9 +848,7 @@ describe("Ticiou command workflow", () => {
     expect(existsSync(join(root, ".claude/settings.local.json"))).toBe(false);
     expect(existsSync(join(root, ".claude/skills/ticiou-shared-azure-devops/SKILL.md"))).toBe(true);
     expect(manifest.files.every((entry) => entry.source === "shared")).toBe(true);
-    expect(calls.map((call) => call.args.join(" "))).toContain(
-      "plugin uninstall ticiou-yanan-zhao@ticiou-local-profiles --scope local",
-    );
+    expect(calls.some((call) => call.args[0] === "plugin")).toBe(false);
   });
 
   test("clears all rendered Ticiou resources while keeping project config and platform templates", async () => {
@@ -321,6 +877,31 @@ describe("Ticiou command workflow", () => {
     expect(existsSync(join(root, ".claude/skills/ticiou-shared-azure-devops/SKILL.md"))).toBe(false);
   });
 
+  test("clears SkillHub locks when clearing all rendered resources", async () => {
+    const root = await makeTempRoot();
+
+    await initProject({ cwd: root });
+    await writeSkillHubLock(root, {
+      version: 1,
+      profile: "kaibin.xu",
+      registry: "http://localhost:3000",
+      generatedAt: "",
+      skills: [],
+    });
+    await writeSkillHubLock(root, {
+      version: 1,
+      profile: "yanan.zhao",
+      registry: "http://localhost:3000",
+      generatedAt: "",
+      skills: [],
+    });
+
+    await clearResources({ cwd: root, scope: "all" });
+
+    expect(existsSync(join(root, ".ticiou/.runtime/skillhub-locks"))).toBe(false);
+    expect(existsSync(join(root, ".ticiou/.runtime/skillhub-lock.json"))).toBe(false);
+  });
+
   test("reports status and doctor warnings for the current target", async () => {
     const root = await makeTempRoot();
     const { runner } = createFakeClaudeRunner();
@@ -339,10 +920,9 @@ describe("Ticiou command workflow", () => {
     expect(doctor.messages.join("\n")).toContain("Claude adapter installed");
     expect(doctor.messages.join("\n")).toContain("Manifest files verified");
     expect(doctor.messages.join("\n")).toContain("Claude hooks registered");
-    expect(doctor.messages.join("\n")).toContain("Claude local profile plugin installed and enabled");
   });
 
-  test("doctor reports when the Claude local plugin is configured but not installed", async () => {
+  test("doctor does not require the deprecated Claude local profile plugin", async () => {
     const root = await makeTempRoot();
     const runner: CommandRunner = async () => ({ stdout: "[]\n", stderr: "" });
 
@@ -361,10 +941,8 @@ describe("Ticiou command workflow", () => {
 
     const doctor = await doctorProject({ cwd: root, runner });
 
-    expect(doctor.ok).toBe(false);
-    expect(doctor.messages.join("\n")).toContain(
-      "Claude local profile plugin is not installed: ticiou-yanan-zhao@ticiou-local-profiles",
-    );
+    expect(doctor.ok).toBe(true);
+    expect(doctor.messages.join("\n")).not.toContain("Claude local profile plugin");
   });
 
   test("doctor reports missing hook files, stale manifest entries, and missing active profiles", async () => {
@@ -391,7 +969,7 @@ describe("Ticiou command workflow", () => {
     const doctor = await doctorProject({ cwd: root, runner });
 
     expect(doctor.ok).toBe(false);
-    expect(doctor.messages.join("\n")).toContain("Active profile missing.user was not found in packaged Ticiou profiles");
+    expect(doctor.messages.join("\n")).toContain("Active profile: missing.user");
     expect(doctor.messages.join("\n")).toContain("Missing generated file: .claude/skills/ticiou-missing/SKILL.md");
     expect(doctor.messages.join("\n")).toContain("Missing Claude hook file: .claude/hooks/session-start.py");
   });

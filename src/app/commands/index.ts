@@ -19,6 +19,7 @@ export type {
   CommandResult,
   DoctorResult,
   InstallPlatformOptions,
+  SkillSelectorContext,
   SetupProjectOptions,
   StatusResult,
   UseProfileOptions,
